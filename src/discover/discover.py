@@ -42,13 +42,15 @@ PORT = int(os.environ.get("SS_DISCOVERY_PORT", "8080"))
 SS_CLOUD_URL = os.environ.get("SS_CLOUD_URL", "https://api.serverstick.com")
 
 # Hardcoded fallback models — TokenRouter-compatible models that work with the built-in starter key
+# These are the models most likely to be available via TokenRouter proxy.
+# Format matches OpenAI /v1/models response for zero-surprise integration.
 HARDCODED_MODELS = [
-    {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
-    {"id": "deepseek-chat", "object": "model", "owned_by": "deepseek"},
-    {"id": "deepseek-reasoner", "object": "model", "owned_by": "deepseek"},
-    {"id": "gpt-4o", "object": "model", "owned_by": "system"},
-    {"id": "gpt-4o-mini", "object": "model", "owned_by": "system"},
-    {"id": "claude-sonnet-4-20250514", "object": "model", "owned_by": "anthropic"},
+    {"id": "glm-5.1",                    "object": "model", "created": 1718000000, "owned_by": "zhipu",       "description": "GLM 5.1 — reasoning powerhouse"},
+    {"id": "deepseek-chat",              "object": "model", "created": 1718000000, "owned_by": "deepseek",    "description": "DeepSeek V4 Flash — fast general-purpose"},
+    {"id": "deepseek-reasoner",          "object": "model", "created": 1718000000, "owned_by": "deepseek",    "description": "DeepSeek R1 — reasoning model"},
+    {"id": "gpt-4o",                     "object": "model", "created": 1718000000, "owned_by": "openai",       "description": "GPT-4o — multimodal flagship"},
+    {"id": "gpt-4o-mini",               "object": "model", "created": 1718000000, "owned_by": "openai",       "description": "GPT-4o Mini — fast and cheap"},
+    {"id": "claude-sonnet-4-20250514",   "object": "model", "created": 1718000000, "owned_by": "anthropic",    "description": "Claude Sonnet 4 — balanced推理"},
 ]
 
 # Cache for decrypted secrets (in-memory only, cleared on restart)
