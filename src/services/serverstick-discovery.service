@@ -1,0 +1,23 @@
+[Unit]
+Description=ServerStick Model Discovery Endpoint
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/serverstick/env
+ExecStart=/var/lib/serverstick/venv/bin/python3 /var/lib/serverstick/discover.py
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log/serverstick
+
+[Install]
+WantedBy=multi-user.target

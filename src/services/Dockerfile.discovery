@@ -1,0 +1,11 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+COPY ../discover/discover.py .
+
+# No external deps — discover.py uses only stdlib (urllib)
+RUN chmod +x discover.py
+
+EXPOSE 8080
+
+CMD ["python3", "discover.py"]

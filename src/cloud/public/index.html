@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ServerStick — USB Plug-and-Play Self-Hosting</title>
+  <meta name="description" content="ServerStick turns any machine into a privacy-first self-hosting appliance. Plug in a USB, boot, and own your data — zero configuration required.">
+  <meta property="og:title" content="ServerStick — USB Plug-and-Play Self-Hosting">
+  <meta property="og:description" content="USB plug-and-play self-hosting. Zero config. Take back your data.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://serverstick.com">
+  <meta property="og:image" content="https://serverstick.com/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="ServerStick — USB Plug-and-Play Self-Hosting">
+  <meta name="twitter:description" content="USB plug-and-play self-hosting. Zero config. Take back your data.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔌</text></svg>">
+  <style>
+    :root {
+      --bg: #0a0a0b;
+      --surface: #141416;
+      --surface2: #1c1c20;
+      --border: #2a2a2e;
+      --text: #e4e4e7;
+      --muted: #71717a;
+      --accent: #22c55e;
+      --accent2: #16a34a;
+      --accent-glow: rgba(34,197,94,0.15);
+      --accent-glow2: rgba(34,197,94,0.08);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    /* Nav */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(10,10,11,0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      padding: 0 2rem;
+      height: 64px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-brand { font-size: 1.25rem; font-weight: 700; }
+    .nav-brand span { color: var(--accent); }
+    .nav-links { display: flex; gap: 2rem; align-items: center; }
+    .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.9rem; transition: color 0.2s; }
+    .nav-links a:hover { color: var(--text); }
+    .nav-cta {
+      background: var(--accent) !important; color: var(--bg) !important;
+      padding: 0.4rem 1rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+    .nav-cta:hover { background: var(--accent2) !important; color: var(--bg) !important; transform: translateY(-1px); }
+
+    /* Container */
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 2rem; }
+
+    /* Hero */
+    .hero {
+      min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      position: relative; padding-top: 64px;
+    }
+    .hero::before {
+      content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 800px; height: 600px;
+      background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-inner { text-align: center; position: relative; z-index: 1; }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 100px;
+      padding: 0.35rem 1rem; font-size: 0.8rem; color: var(--muted);
+      margin-bottom: 2rem;
+    }
+    .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+    .hero h1 {
+      font-size: clamp(2.5rem, 6vw, 4.5rem); font-weight: 800;
+      letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 1.5rem;
+    }
+    .hero h1 span { color: var(--accent); }
+    .hero-tagline {
+      font-size: clamp(1.1rem, 2.5vw, 1.4rem); color: var(--muted);
+      max-width: 600px; margin: 0 auto 2.5rem; font-weight: 400;
+    }
+
+    /* Terminal box */
+    .terminal {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; max-width: 600px; margin: 0 auto 2.5rem;
+      overflow: hidden; text-align: left;
+    }
+    .terminal-bar {
+      display: flex; align-items: center; gap: 6px;
+      padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+    .terminal-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .terminal-dot.red { background: #ef4444; }
+    .terminal-dot.yellow { background: #eab308; }
+    .terminal-dot.green { background: var(--accent); }
+    .terminal-body {
+      padding: 1.25rem 1.5rem; font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+      font-size: 0.9rem; line-height: 1.8; overflow-x: auto;
+    }
+    .terminal-body .comment { color: var(--muted); }
+    .terminal-body .cmd { color: var(--accent); }
+    .terminal-body .prompt { color: var(--muted); user-select: none; }
+    .cursor { display: inline-block; width: 8px; height: 1.2em; background: var(--accent); vertical-align: text-bottom; animation: blink 1s step-end infinite; }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    .hero-buttons { display: flex; justify-content: center; gap: 1rem; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.75rem 1.75rem; border-radius: 8px; font-size: 0.95rem;
+      font-weight: 600; text-decoration: none; transition: all 0.2s; cursor: pointer; border: none;
+    }
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-primary:hover { background: var(--accent2); transform: translateY(-2px); box-shadow: 0 8px 24px var(--accent-glow); }
+    .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { border-color: var(--muted); transform: translateY(-2px); }
+
+    .hero-scroll {
+      position: absolute; bottom: 2rem; left: 50%; transform: translateX(-50%);
+      color: var(--muted); font-size: 1.5rem; animation: bounce 2s infinite;
+    }
+    @keyframes bounce { 0%, 100% { transform: translateX(-50%) translateY(0); } 50% { transform: translateX(-50%) translateY(8px); } }
+
+    /* Section */
+    section { padding: 6rem 0; }
+    .section-label {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      font-size: 0.8rem; font-weight: 600; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 1rem;
+    }
+    .section-title {
+      font-size: clamp(1.75rem, 4vw, 2.5rem); font-weight: 700;
+      letter-spacing: -0.02em; margin-bottom: 1rem;
+    }
+    .section-desc { color: var(--muted); font-size: 1.1rem; max-width: 600px; }
+    .section-desc.center { margin: 0 auto; text-align: center; }
+
+    /* Features */
+    .features { background: linear-gradient(180deg, var(--bg) 0%, var(--surface2) 50%, var(--bg) 100%); }
+    .feature-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 1.5rem; margin-top: 3rem;
+    }
+    .feature-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2rem; transition: all 0.3s;
+    }
+    .feature-card:hover { border-color: var(--accent); transform: translateY(-4px); box-shadow: 0 12px 40px rgba(0,0,0,0.4); }
+    .feature-icon {
+      width: 48px; height: 48px; border-radius: 10px; background: var(--accent-glow);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.5rem; margin-bottom: 1.25rem;
+    }
+    .feature-card h3 { font-size: 1.15rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .feature-card p { color: var(--muted); font-size: 0.95rem; line-height: 1.6; }
+
+    /* Services */
+    .services-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 1rem; margin-top: 3rem;
+    }
+    .service-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 1.5rem 1rem; text-align: center;
+      transition: all 0.25s; cursor: default;
+    }
+    .service-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .service-emoji { font-size: 2rem; margin-bottom: 0.5rem; display: block; }
+    .service-name { font-size: 0.85rem; font-weight: 600; }
+    .service-desc { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+
+    /* Architecture */
+    .arch-flow {
+      display: flex; align-items: center; justify-content: center; gap: 0;
+      margin-top: 3rem; flex-wrap: nowrap; overflow-x: auto;
+      padding-bottom: 1rem;
+    }
+    .arch-step {
+      flex: 1; min-width: 180px; max-width: 260px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 2rem 1.5rem; text-align: center;
+      position: relative;
+    }
+    .arch-step-number {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--accent); color: var(--bg);
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 0.75rem; font-weight: 700; margin-bottom: 1rem;
+    }
+    .arch-step h4 { font-size: 1rem; font-weight: 600; margin-bottom: 0.4rem; }
+    .arch-step p { font-size: 0.8rem; color: var(--muted); }
+    .arch-arrow {
+      flex: 0 0 40px; display: flex; align-items: center; justify-content: center;
+      color: var(--accent); font-size: 1.25rem; min-width: 40px;
+    }
+
+    /* CTA */
+    .cta-section { text-align: center; position: relative; }
+    .cta-box {
+      background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+      border: 1px solid var(--border); border-radius: 16px;
+      padding: 4rem 2rem; position: relative; overflow: hidden;
+    }
+    .cta-box::before {
+      content: ''; position: absolute; top: -50%; left: -50%;
+      width: 200%; height: 200%; background: radial-gradient(circle, var(--accent-glow2) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    .cta-box > * { position: relative; z-index: 1; }
+
+    /* Footer */
+    footer {
+      border-top: 1px solid var(--border); padding: 2rem 0;
+      color: var(--muted); font-size: 0.85rem;
+    }
+    .footer-inner {
+      display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;
+    }
+    footer a { color: var(--accent); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      nav { padding: 0 1rem; }
+      .nav-links { gap: 1rem; }
+      .nav-links a:not(.nav-cta) { display: none; }
+      .container { padding: 0 1.25rem; }
+      section { padding: 4rem 0; }
+      .hero-inner { padding: 2rem 0; }
+      .arch-flow { flex-direction: column; gap: 0; }
+      .arch-arrow { transform: rotate(90deg); min-width: unset; flex: 0 0 24px; }
+      .arch-step { max-width: 100%; min-width: unset; }
+      .services-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+      .terminal-body { font-size: 0.78rem; }
+      .hero-buttons { flex-direction: column; align-items: center; }
+    }
+
+    /* Animations */
+    .fade-up {
+      opacity: 0; transform: translateY(30px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .fade-up.visible { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav>
+    <a href="/" style="text-decoration:none; color: var(--text);">🔌 <span class="nav-brand">Server<span>Stick</span></span></a>
+    <div class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#services">Services</a>
+      <a href="#architecture">How It Works</a>
+      <a href="https://github.com/earendil-works/serverstick" target="_blank" rel="noopener" class="nav-cta">Get Started</a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="container">
+      <div class="hero-inner">
+        <div class="hero-badge"><span class="dot"></span> Now in development</div>
+        <h1>Server<span>Stick</span></h1>
+        <p class="hero-tagline">USB plug-and-play self-hosting. Zero config. Take back your data.</p>
+
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span class="terminal-dot red"></span>
+            <span class="terminal-dot yellow"></span>
+            <span class="terminal-dot green"></span>
+          </div>
+          <div class="terminal-body">
+            <span class="comment"># Install ServerStick on any Debian 12 machine</span><br>
+            <span class="prompt">$ </span><span class="cmd">curl -fsSL https://serverstick.com/get.sh | bash</span><span class="cursor"></span>
+          </div>
+        </div>
+
+        <div class="hero-buttons">
+          <a href="https://github.com/earendil-works/serverstick" target="_blank" rel="noopener" class="btn btn-primary">⚡ Get Started</a>
+          <a href="#features" class="btn btn-secondary">Learn More ↓</a>
+        </div>
+      </div>
+    </div>
+    <div class="hero-scroll">↓</div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="features">
+    <div class="container">
+      <div class="fade-up" style="text-align:center;">
+        <div class="section-label">Features</div>
+        <h2 class="section-title">Self-hosting, minus the headache</h2>
+        <p class="section-desc center">ServerStick delivers a complete self-hosted stack with the simplicity of a USB stick. No DevOps degree required.</p>
+      </div>
+      <div class="feature-grid">
+        <div class="feature-card fade-up">
+          <div class="feature-icon">🔒</div>
+          <h3>Privacy-First</h3>
+          <p>SOPS-encrypted secrets with age keypairs generated on-device. Your data never leaves your hardware. No cloud dependency.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">🤖</div>
+          <h3>AI-Powered Setup</h3>
+          <p>Pi, your local AI agent, scans hardware, recommends services, and configures everything — no manual editing required.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">🌐</div>
+          <h3>One-Click Tunneling</h3>
+          <p>Pangolin tunnel gives your services public HTTPS URLs instantly. No port forwarding, no DDNS, no hassle.</p>
+        </div>
+        <div class="feature-card fade-up">
+          <div class="feature-icon">💻</div>
+          <h3>Runs Anywhere</h3>
+          <p>Any Debian 12 machine — an old laptop, a mini PC, a cloud VPS. Plug in the USB, boot, and you're live.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Services -->
+  <section id="services">
+    <div class="container">
+      <div class="fade-up" style="text-align:center;">
+        <div class="section-label">Services</div>
+        <h2 class="section-title">Your personal cloud, self-hosted</h2>
+        <p class="section-desc center">A curated stack of privacy-respecting services, deployed and configured automatically.</p>
+      </div>
+      <div class="services-grid">
+        <div class="service-card fade-up">
+          <span class="service-emoji">🏠</span>
+          <div class="service-name">Homepage</div>
+          <div class="service-desc">Dashboard hub</div>
+        </div>
+        <div class="service-card fade-up">
+          <span class="service-emoji">📄</span>
+          <div class="service-name">Stirling PDF</div>
+          <div class="service-desc">PDF toolkit</div>
+        </div>
+        <div class="service-card fade-up">
+          <span class="service-emoji">📝</span>
+          <div class="service-name">PrivateBin</div>
+          <div class="service-desc">Encrypted pastebin</div>
+        </div>
+        <div class="service-card fade-up">
+          <span class="service-emoji">📡</span>
+          <div class="service-name">PairDrop</div>
+          <div class="service-desc">Local file sharing</div>
+        </div>
+        <div class="service-card fade-up">
+          <span class="service-emoji">✅</span>
+          <div class="service-name">Uptime Kuma</div>
+          <div class="service-desc">Service monitoring</div>
+        </div>
+        <div class="service-card fade-up">
+          <span class="service-emoji">🗄️</span>
+          <div class="service-name">Pi (AI)</div>
+          <div class="service-desc">LLM agent harness</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Architecture -->
+  <section id="architecture" class="features">
+    <div class="container">
+      <div class="fade-up" style="text-align:center;">
+        <div class="section-label">How It Works</div>
+        <h2 class="section-title">From USB to live services in minutes</h2>
+        <p class="section-desc center">ServerStick automates the entire lifecycle — from provisioning to production.</p>
+      </div>
+      <div class="arch-flow fade-up">
+        <div class="arch-step">
+          <div class="arch-step-number">1</div>
+          <h4>🔌 USB Stick</h4>
+          <p>Flash the image, plug into any machine, and boot</p>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-step">
+          <div class="arch-step-number">2</div>
+          <h4>🚀 Bootstrap</h4>
+          <p>Installs Debian, Docker, and Pi (AI agent)</p>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-step">
+          <div class="arch-step-number">3</div>
+          <h4>📦 Services</h4>
+          <p>AI configures and deploys your self-hosted stack</p>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-step">
+          <div class="arch-step-number">4</div>
+          <h4>🌐 Tunnel</h4>
+          <p>Pangolin gives you public HTTPS — instantly</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section">
+    <div class="container">
+      <div class="cta-box fade-up">
+        <div class="section-label">Open Source</div>
+        <h2 class="section-title" style="margin-bottom: 0.5rem;">Ready to take back your data?</h2>
+        <p class="section-desc" style="margin:0 auto 2rem; text-align:center;">ServerStick is free, open-source, and built for everyone. One command to get started.</p>
+        <div style="display: flex; justify-content: center; flex-wrap: wrap; gap: 1rem;">
+          <a href="https://github.com/earendil-works/serverstick" target="_blank" rel="noopener" class="btn btn-primary">⚡ View on GitHub</a>
+          <button class="btn btn-secondary" onclick="copyInstall()">📋 Copy install command</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <div class="footer-inner">
+        <div>🔌 <strong>ServerStick</strong> — by <a href="https://earendil.works" target="_blank" rel="noopener">Earendil Works</a></div>
+        <div><a href="https://github.com/earendil-works/serverstick" target="_blank" rel="noopener">GitHub</a> · <a href="mailto:hello@earendil.works">Contact</a></div>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    // Scroll reveal
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.fade-up').forEach(el => observer.observe(el));
+
+    // Copy install command
+    function copyInstall() {
+      const cmd = 'curl -fsSL https://serverstick.com/get.sh | bash';
+      navigator.clipboard.writeText(cmd).then(() => {
+        const btn = event.target;
+        const orig = btn.textContent;
+        btn.textContent = '✅ Copied!';
+        setTimeout(() => btn.textContent = orig, 2000);
+      }).catch(() => {
+        // Fallback
+        const ta = document.createElement('textarea');
+        ta.value = cmd; document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy');
+        document.body.removeChild(ta);
+      });
+    }
+
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  </script>
+</body>
+</html>

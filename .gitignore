@@ -1,0 +1,85 @@
+# Secrets and credentials
+pangolin.env
+age.key
+keys.enc.yaml
+*.env
+*.env.*
+!.env.example
+!*.env.template
+*.key
+*.pem
+*.enc.yaml
+*secret*
+*password*
+*credentials*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-*
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+*.egg
+.eggs/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Node.js
+node_modules/
+.npm
+.npmrc
+
+# Build artifacts
+build/
+out/
+*.o
+*.a
+*.ko
+*.obj
+*.exe
+*.dll
+*.dylib
+
+# ISO / disk images
+*.iso
+*.img
+*.raw
+
+# Logs
+*.log
+logs/
+
+# Miscellaneous
+*.tmp
+*.bak
+*.orig
+*.rej
+.cache/
+coverage/
+.nyc_output/

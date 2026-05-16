@@ -1,0 +1,116 @@
+# ServerStick v1 Services — Docker Compose
+#
+# All stateless or near-stateless services. Data volumes live under
+# /var/lib/serverstick/data/{service}/. Newt tunnels all HTTP services
+# through Pangolin with *.serverstick.com subdomain routing.
+#
+# Port map (host → container):
+#   3000 → PairDrop (P2P file sharing)
+#   3001 → Uptime Kuma (monitoring)
+#   3002 → Homepage (dashboard)
+#   7000 → rembg (background removal)
+#   8080 → Discovery API (host process, NOT in Docker)
+#   8084 → PrivateBin (encrypted pastebin)
+#   8440 → Stirling PDF (PDF tools)
+#   8888 → Dozzle (container logs)
+
+services:
+  # ─── Dashboard ──────────────────────────────────────────────────────────
+
+  homepage:
+    image: ghcr.io/benphelps/homepage:latest
+    container_name: homepage
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    volumes:
+      - /var/lib/serverstick/data/homepage:/app/config
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      HOMEPAGE_ALLOWED_HOSTS: "home.serverstick.com"
+
+  # ─── PDF Tools ──────────────────────────────────────────────────────────
+
+  stirling-pdf:
+    image: frooodle/s-pdf:latest
+    container_name: stirling-pdf
+    restart: unless-stopped
+    ports:
+      - "8440:8080"
+    volumes:
+      - /var/lib/serverstick/data/stirling-pdf/trainingData:/usr/share/tessdata
+      - /var/lib/serverstick/data/stirling-pdf/extraConfigs:/configs
+    environment:
+      DOCKER_ENABLE_SECURITY: "false"
+      INSTALL_BOOK_AND_ADVANCED_HTML_OPS: "false"
+      SYSTEM_MAXFILESIZE: "50"
+
+  # ─── Pastebin ───────────────────────────────────────────────────────────
+
+  privatebin:
+    image: privatebin/nginx-fpm-alpine:latest
+    container_name: privatebin
+    restart: unless-stopped
+    ports:
+      - "8084:8080"
+    volumes:
+      - /var/lib/serverstick/data/privatebin:/srv/data
+    read_only: true
+
+  # ─── File Sharing ───────────────────────────────────────────────────────
+
+  pairdrop:
+    image: lscr.io/linuxserver/pairdrop:latest
+    container_name: pairdrop
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "UTC"
+
+  # ─── Monitoring ─────────────────────────────────────────────────────────
+
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    volumes:
+      - /var/lib/serverstick/data/uptime-kuma:/app/data
+
+  # ─── Container Logs ─────────────────────────────────────────────────────
+
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: dozzle
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # ─── Image Tools ────────────────────────────────────────────────────────
+
+  rembg:
+    image: danielgatis/rembg:latest
+    container_name: rembg
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    command: ["--host", "0.0.0.0", "--port", "7000"]
+
+  # ─── Auto-Updates ───────────────────────────────────────────────────────
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      WATCHTOWER_SCHEDULE: "0 0 4 * * *"     # 4 AM daily
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_MONITOR_ONLY: "true"         # v1: monitor only, manual updates
