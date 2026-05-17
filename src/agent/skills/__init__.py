@@ -12,6 +12,7 @@ The system detects which mode is active and uses the appropriate one.
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -19,19 +20,8 @@ from typing import Any
 import yaml
 
 # Use the same env vars as main.py
-SS_DIR = Path(os.environ.get("SERVERSTICK_DIR", "/etc/serverstick")) if "os" not in dir() else Path("/etc/serverstick")
-SS_DATA = Path(os.environ.get("SERVERSTICK_DATA", "/var/lib/serverstick/data")) if "os" not in dir() else Path("/var/lib/serverstick/data")
-
-# Fallback: always use sensible defaults
-SS_DIR = Path("/etc/serverstick")
-SS_DATA = Path("/var/lib/serverstick/data")
-
-try:
-    import os
-    SS_DIR = Path(os.environ.get("SERVERSTICK_DIR", "/etc/serverstick"))
-    SS_DATA = Path(os.environ.get("SERVERSTICK_DATA", "/var/lib/serverstick/data"))
-except ImportError:
-    pass
+SS_DIR = Path(os.environ.get("SERVERSTICK_DIR", "/etc/serverstick"))
+SS_DATA = Path(os.environ.get("SERVERSTICK_DATA", "/var/lib/serverstick/data"))
 
 
 class SkillBase:
