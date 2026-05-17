@@ -362,9 +362,8 @@ def get_tunnel_status() -> dict:
     except Exception:
         active = False
 
-    # Also check if Newt config exists
-    newt_conf = NEWT_CONF_DIR / "newt.json"
-    configured = newt_conf.exists()
+    # Check if pangolin env config exists
+    configured = (SS_DIR / "pangolin.env").exists()
 
     return {
         "active": active,
@@ -381,16 +380,18 @@ def _write_newt_config(newt_id: str, newt_secret: str):
         "newtId": newt_id,
         "secret": newt_secret,
         "endpoint": "gerbil.pangolin.net:50120",
-    }
+}
     (NEWT_CONF_DIR / "newt.json").write_text(json.dumps(newt_conf, indent=2))
+    os.chmod(NEWT_CONF_DIR / "newt.json", 0o600)
 
-    # Also write the env file for systemd
+    # Also write the env file for systemd (real values, restrict perms)
     env_file = SS_DIR / "pangolin.env"
     env_file.write_text(
         f"NEWT_ID={newt_id}\n"
         f"NEWT_SECRET={newt_secret}\n"
         f"NEWT_ENDPOINT=gerbil.pangolin.net:50120\n"
     )
+    os.chmod(env_file, 0o600)
 
 
 def _enable_newt_service():

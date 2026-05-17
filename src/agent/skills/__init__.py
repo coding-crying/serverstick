@@ -221,7 +221,16 @@ class SkillBase:
                 ["docker", "compose", "-f", str(shared_compose)] + list(args),
                 capture_output=True, text=True, timeout=120,
             )
-        return self._compose(*args)
+        per_service_compose = self.compose_dir / "docker-compose.yml"
+        if per_service_compose.exists():
+            return subprocess.run(
+                ["docker", "compose", "-f", str(per_service_compose)] + list(args),
+                capture_output=True, text=True, timeout=120,
+            )
+        # Nothing installed — return a fake failure
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="Service not installed"
+        )
 
     def _generate_compose(self) -> str:
         """Generate docker-compose.yml from catalog entry."""

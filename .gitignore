@@ -55,6 +55,9 @@ node_modules/
 .npm
 .npmrc
 
+# SvelteKit
+.svelte-kit/
+
 # Build artifacts
 build/
 out/
