@@ -1,35 +1,20 @@
-# ServerStick v1 Services — Docker Compose
-#
-# All stateless or near-stateless services. Data volumes live under
-# /var/lib/serverstick/data/{service}/. Newt tunnels all HTTP services
-# through Pangolin with *.serverstick.com subdomain routing.
-#
-# Port map (host → container):
-#   3000 → PairDrop (P2P file sharing)
-#   3001 → Uptime Kuma (monitoring)
-#   3002 → Homepage (dashboard)
-#   7000 → rembg (background removal)
-#   8080 → Discovery API (host process, NOT in Docker)
-#   8084 → PrivateBin (encrypted pastebin)
-#   8440 → Stirling PDF (PDF tools)
-#   8888 → Dozzle (container logs)
+# ServerStick Docker Compose — per-device services
+# Auto-managed by Pi Agent. Do not edit manually.
 
 services:
-  # ─── Dashboard ──────────────────────────────────────────────────────────
-
   homepage:
-    image: ghcr.io/benphelps/homepage:latest
+    image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
     restart: unless-stopped
     ports:
-      - "3002:3000"
+      - "3002:3002"
     volumes:
       - /var/lib/serverstick/data/homepage:/app/config
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
-      HOMEPAGE_ALLOWED_HOSTS: "home.serverstick.com"
-
-  # ─── PDF Tools ──────────────────────────────────────────────────────────
+      - HOMEPAGE_ALLOWED_HOSTS={{DEVICE_NAME}}.serverstick.com
+    labels:
+      - "com.serverstick.service=homepage"
 
   stirling-pdf:
     image: frooodle/s-pdf:latest
@@ -41,11 +26,10 @@ services:
       - /var/lib/serverstick/data/stirling-pdf/trainingData:/usr/share/tessdata
       - /var/lib/serverstick/data/stirling-pdf/extraConfigs:/configs
     environment:
-      DOCKER_ENABLE_SECURITY: "false"
-      INSTALL_BOOK_AND_ADVANCED_HTML_OPS: "false"
-      SYSTEM_MAXFILESIZE: "50"
-
-  # ─── Pastebin ───────────────────────────────────────────────────────────
+      - DOCKER_ENABLE_SECURITY=false
+      - SECURITY_ENABLE LoginPage=false
+    labels:
+      - "com.serverstick.service=stirling-pdf"
 
   privatebin:
     image: privatebin/nginx-fpm-alpine:latest
@@ -55,33 +39,40 @@ services:
       - "8084:8080"
     volumes:
       - /var/lib/serverstick/data/privatebin:/srv/data
-    read_only: true
-
-  # ─── File Sharing ───────────────────────────────────────────────────────
+    labels:
+      - "com.serverstick.service=privatebin"
 
   pairdrop:
-    image: lscr.io/linuxserver/pairdrop:latest
+    image: linuxserver/pairdrop:latest
     container_name: pairdrop
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
-      PUID: "1000"
-      PGID: "1000"
-      TZ: "UTC"
-
-  # ─── Monitoring ─────────────────────────────────────────────────────────
+      - PUID=1000
+      - PGID=1000
+    labels:
+      - "com.serverstick.service=pairdrop"
 
   uptime-kuma:
-    image: louislam/uptime-kuma:1
+    image: louislam/uptime-kuma:latest
     container_name: uptime-kuma
     restart: unless-stopped
     ports:
       - "3001:3001"
     volumes:
       - /var/lib/serverstick/data/uptime-kuma:/app/data
+    labels:
+      - "com.serverstick.service=uptime-kuma"
 
-  # ─── Container Logs ─────────────────────────────────────────────────────
+  rembg:
+    image: danielgatis/rembg:latest
+    container_name: rembg
+    restart: unless-stopped
+    ports:
+      - "7000:7000"
+    labels:
+      - "com.serverstick.service=rembg"
 
   dozzle:
     image: amir20/dozzle:latest
@@ -91,26 +82,23 @@ services:
       - "8888:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-
-  # ─── Image Tools ────────────────────────────────────────────────────────
-
-  rembg:
-    image: danielgatis/rembg:latest
-    container_name: rembg
-    restart: unless-stopped
-    ports:
-      - "7000:7000"
-    command: ["--host", "0.0.0.0", "--port", "7000"]
-
-  # ─── Auto-Updates ───────────────────────────────────────────────────────
+    labels:
+      - "com.serverstick.service=dozzle"
 
   watchtower:
     image: containrrr/watchtower:latest
     container_name: watchtower
     restart: unless-stopped
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      WATCHTOWER_SCHEDULE: "0 0 4 * * *"     # 4 AM daily
-      WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_MONITOR_ONLY: "true"         # v1: monitor only, manual updates
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - WATCHTOWER_NOTIFICATIONS=email
+    labels:
+      - "com.serverstick.service=watchtower"
+
+networks:
+  default:
+    name: serverstick

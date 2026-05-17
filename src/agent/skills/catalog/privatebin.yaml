@@ -1,0 +1,19 @@
+name: privatebin
+display: PrivateBin
+replaces: Pastebin / GitHub Gists
+icon: "\U0001F4CB"
+category: sharing
+description: "Encrypted pastebin \u2014 share text and code snippets that self-destruct."
+docker:
+  image: privatebin/nginx-fpm-alpine:latest
+  port: 8084
+  restart: unless-stopped
+  volumes:
+  - /var/lib/serverstick/data/privatebin:/srv/data
+health:
+  endpoint: /
+  method: GET
+  expect_status: 200
+pangolin:
+  subdomain: bin
+llm_cost: low

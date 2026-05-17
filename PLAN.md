@@ -12,16 +12,9 @@ USB stick that installs a preconfigured Debian self-hosting stack onto host stor
 
 ### LLM Harness: Pi (NOT forked)
 
-Using [Pi](https://github.com/earendil-works/pi) as the agent harness. Not forking it — using it as a dependency via its skill/extension system.
+**DEFERRED** — The original plan was Pi in RPC mode. Now using direct FastAPI + TokenRouter calls with a two-tier model router. Pi's skill system concept lives on as our YAML catalog + Python hooks, but we're not running Pi as a subprocess anymore. Faster, simpler, no RPC bridge complexity.
 
-Confirmed reasons:
-- RPC mode (JSONL over stdin/stdout) — works headless, works behind a web bridge
-- Skill system — we write custom tools, no core changes needed
-- pi-web-ui components — ready-made chat UI pieces if we want them
-- MIT licensed, lightweight
-- Multi-provider LLM support (cheapest model that works)
-
-Still need to validate: Can Pi skills do everything we need? Do they run in RPC mode? Does the skill packaging work for our use case? **Untested.**
+If we need conversational AI later, we can add it as a skill that calls the LLM router — Pi is an option, not a requirement.
 
 ### Secrets: SOPS + age
 
@@ -47,25 +40,44 @@ Stock Debian netinst ISO + injected `preseed.cfg` built with `xorriso`. The pres
 
 Still need to validate: xorriso repack process, preseed reliability on varied hardware, whether late_command network access is reliable. **Untested.**
 
-### Setup: Custom Web Wizard + Pi RPC
+### Dashboard: Svelte + FastAPI (Pi Agent)
 
-First boot: Pi starts in `--mode rpc`. A thin WebSocket bridge ( Node or Python, TBD) serves a custom web wizard — **not** React, not pi-web-ui. Vanilla HTML/JS frontend, no build step, no node_modules on the target.
+First boot: Pi Agent starts (systemd). FastAPI backend + SvelteKit frontend at `http://<lan-ip>:8080`.
 
-**Why custom, not pi-web-ui:**
-- pi-web-ui is a coding chat interface. We need a setup wizard (hardware scan → service picker → key entry → install). Wrong abstraction.
-- The wizard is a form flow, not a conversation. Pi provides the intelligence behind the scenes, the wizard renders results.
-- Vanilla HTML/JS works on any browser including old phones. Ships small.
+**Why Svelte:**
+- Tiny bundle (~15KB gzip), reactive, fast on low-power devices
+- SvelteKit SSR for first-contentful-paint on slow connections
+- Real product feel, not a toy
+- Component model maps to service cards naturally
 
-**Agent Activity panel (polish, not required):**
-- Collapsible sidebar/panel showing Pi's raw JSONL stream — tool calls, thinking, responses, errors
-- Same data the wizard uses, just rendered as-is for debug/transparency
-- Strictly additive — second render target on the same WebSocket, no architecture change
+**Why not vanilla HTML/JS anymore:**
+- Need real interactivity (service toggle, status polling, config forms, logs streaming)
+- Svelte compiles to vanilla JS anyway — no runtime overhead
+- Service catalog cards, subnet routing, live health checks — these need reactive state
+
+**Why FastAPI for backend:**
+- Async, WebSocket support for live logs and agent stream
+- SOPS/secrets integration, Docker management, all in Python
+- Pi was gonna use Python anyway (skills, SOPS CLI calls)
+- Single process serves both API and static Svelte build
+
+**Routing architecture — two model tiers:**
+- DeepSeek V4 Flash (`deepseek-chat`) — service management, status, simple tasks
+- GLM 5.1 (`glm-5.1`) — troubleshooting, security, complex reasoning, user chat
+- Simple pattern-matching router; never silently downgrade
+- Both via TokenRouter API, key from SOPS-encrypted starter/earnings key
+
+**Skill plugin system:**
+- Each service has a YAML catalog entry (docker image, port, volumes, health check, subdomain)
+- Python skill classes handle install, configure, health-check, expose
+- Skills are loaded dynamically from `catalog/` directory
+- New services = new YAML + optional Python hook, no core changes
 
 Works on:
 - Old laptop with display (Chromium kiosk)
 - Headless box (mDNS + phone/laptop browser)
 
-Still need to validate: WebSocket bridge reliability, mDNS on various networks, Chromium kiosk behavior, Pi skill tool execution in RPC mode. **Untested.**
+Still need to validate: WebSocket reliability, mDNS on various networks, Svelte build size on arm64. **Untested.**
 
 ### Tunneling: Pangolin Cloud (verified, operational)
 
@@ -78,20 +90,26 @@ Using Pangolin Cloud (managed, free tier) rather than self-hosted Enterprise. Si
 - Non-technical users can't debug glue code failures — less custom code = more reliable
 - 20k+ stars, actively maintained, FOSS
 
-**Pangolin Cloud resources (serverstick.com):**
+**Pangolin Cloud resources — per-device sub-sub-domains:**
 
-| Subdomain | Service | Port |
-|-----------|---------|------|
-| home | Homepage dashboard | 3002 |
-| pdf | Stirling-PDF | 8440 |
-| bin | PrivateBin | 8084 |
-| drop | PairDrop | 3000 |
-| kuma | Uptime Kuma | 3001 |
-| rembg | Background removal API | 7000 |
-| logs | Dozzle (container logs) | 8888 |
-| api | Discovery endpoint | 8080 |
-| pi | Pi agent (future) | — |
-| tools | IT-Tools (future) | — |
+Pattern: `{service}.{device}.serverstick.com` (e.g. `pdf.nick.serverstick.com`)
+
+Each device = 1 Pangolin site with N resources. Blueprint auto-creates resources on first connect.
+
+|| Service | Subdomain pattern | Port |
+|---------|-------------------|------|
+| Dashboard | dash.{device} | 8080 |
+| Homepage | home.{device} | 3002 |
+| Stirling-PDF | pdf.{device} | 8440 |
+| PrivateBin | bin.{device} | 8084 |
+| PairDrop | drop.{device} | 3000 |
+| Uptime Kuma | kuma.{device} | 3001 |
+| rembg | rembg.{device} | 7000 |
+| Dozzle | logs.{device} | 8888 |
+| Discovery API | api.{device} | 8080 |
+| Watchtower | (headless, no subdomain) | — |
+
+Current test site: "nick" (siteId 14913). Blueprint YAML below.
 
 **Tunnel client:** Newt runs as a systemd service on the ServerStick device. Connects to `gerbil.pangolin.net:50120`. All resources route to `127.0.0.1:PORT` via Newt.
 
@@ -177,18 +195,20 @@ This means a ServerStick works even if our cloud is down, even if the provider i
 ## Not Yet Decided (do not add to this file until confirmed)
 
 - XMR mining integration details (hosted vs independent, payout flow)
-- Pi skill package structure (we designed one but haven't tested it)
 - systemd target structure (setup.target → default.target)
 - Hardware tier classification for AI query limits
-- Checkmark UI vs. web-only management
 - ISO build pipeline and per-customer key injection
 - How updates work post-install
 - Memory/RAM requirements per service (can all v1 services run on 4GB?)
+- Svelte vs SvelteKit — do we need SSR on-device or is SPA fine?
+- Pi Agent: Docker container vs host systemd service?
+- Multi-device management UX (central dashboard vs per-device)
 
 ---
 
 ## Explicitly Rejected
 
+- **Pi as active agent harness** — Running Pi in RPC mode as the brain is overkill for service management. Direct FastAPI + model router is simpler, faster, no subprocess complexity. Pi's skill concept lives on as YAML catalog + Python hooks.
 - **Forking Pi** — Using it as a dependency with skills. Maintaining a fork is a trap we don't want.
 - **HashiCorp Vault** — BSL-licensed, overkill, requires a running server process. SOPS + age is the right fit.
 - **OpenBao** — Also overkill for our use case. No server process needed.
@@ -206,20 +226,23 @@ This means a ServerStick works even if our cloud is down, even if the provider i
 
 ## Build Status (v0.1 Alpha)
 
-Core scaffold implemented, untested on VM:
+Core scaffold implemented, VM test pending:
 
-- ✅ `src/bootstrap/get.serverstick.sh` — Full bootstrap (Docker, Node, SOPS, age, Pi, Docker Compose services, Newt tunnel, systemd)
-- ✅ `src/discover/discover.py` — Model discovery HTTP endpoint (:8080, reads SOPS secrets, queries /v1/models)
-- ✅ `src/skills/serverstick-setup/SKILL.md` — Pi skill (check-hardware, install-service, configure-sops, check-network)
+- ✅ `src/bootstrap/get.serverstick.sh` — Full bootstrap (Docker, Node, SOPS, age, Docker Compose services, Newt tunnel, systemd)
+- ✅ `src/discover/discover.py` — Model discovery HTTP endpoint (:8080, reads SOPS secrets, queries /v1/models) — **TO BE REPLACED by Pi Agent**
+- ✅ `src/skills/serverstick-setup/SKILL.md` — Pi skill definition (will become agent skills)
 - ✅ `src/config/preseed.cfg.template` — Debian auto-install (%%STARTER_KEY%% + %%PANGOLIN_NEWT_ID%% + %%PANGOLIN_SECRET%%)
-- ✅ `src/services/docker-compose.yml` — 8 services (Homepage, Stirling-PDF, PrivateBin, PairDrop, Uptime Kuma, Dozzle, rembg, Watchtower)
-- ✅ `src/services/Dockerfile.discovery` — Discovery API container (unused — switched to host-level systemd)
-- ✅ `src/services/serverstick-discovery.service` — Discovery endpoint systemd unit
+- ✅ `src/services/docker-compose.yml` — 8 services (needs per-device subdomain update)
+- ✅ `src/services/Dockerfile.discovery` — Discovery API container (unused — host systemd)
+- ✅ `src/services/serverstick-discovery.service` — systemd unit (will be replaced by Pi Agent)
 - ✅ `src/services/serverstick-newt.service` — Newt tunnel systemd unit
 - ✅ `src/services/homepage-config/services.yaml` — Homepage dashboard config
-- ✅ `src/bootstrap/provision-pangolin.sh` — Standalone Newt installer + systemd service
-- ✅ `src/cloud/` — Vercel API project (model discovery proxy, key validation, device registration)
+- ✅ `src/bootstrap/provision-pangolin.sh` — Standalone Newt installer (needs blueprint rewrite)
+- ✅ `src/cloud/` — Vercel API project (needs /v1/provision endpoint)
 - ✅ `src/build-iso.sh` — ISO builder (Debian netinst + inject preseed + repack)
-- ⬜ VM test — Need Debian 12 VM to validate end-to-end
-- ⬜ WebSocket bridge — Pi RPC ↔ browser (next milestone)
-- ⬜ Web wizard — HTML/JS form flow (next milestone)
+- ✅ `ARCHITECTURE.md` — Full architecture document (new)
+- ⬜ Pi Agent — FastAPI backend + Svelte dashboard + skill engine + LLM router
+- ⬜ Service catalog — YAML definitions for each service
+- ⬜ Cloud `/v1/provision` — Pangolin site + blueprint generation
+- ⬜ Svelte dashboard — service grid, status, config, tunnel status
+- ⬜ VM test — Debian 12 end-to-end validation

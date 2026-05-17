@@ -1,0 +1,19 @@
+name: rembg
+display: Background Removal
+replaces: remove.bg
+icon: "\u2702\uFE0F"
+category: media
+description: AI-powered background removal from images. Upload a photo, get a transparent
+  PNG.
+docker:
+  image: danielgatis/rembg
+  port: 7000
+  restart: unless-stopped
+  volumes: []
+health:
+  endpoint: /
+  method: GET
+  expect_status: 200
+pangolin:
+  subdomain: rembg
+llm_cost: low

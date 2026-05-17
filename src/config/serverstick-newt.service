@@ -1,0 +1,17 @@
+[Unit]
+Description=ServerStick Newt Tunnel (Pangolin)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/newt --config /etc/newt/newt.json
+Restart=always
+RestartSec=10
+EnvironmentFile=-/etc/serverstick/pangolin.env
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

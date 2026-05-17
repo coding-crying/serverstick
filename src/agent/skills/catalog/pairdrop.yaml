@@ -1,0 +1,21 @@
+name: pairdrop
+display: PairDrop
+replaces: WeTransfer / Google Drive links
+icon: "\U0001F4E4"
+category: sharing
+description: Local file sharing between any device on your network. No signup, no
+  cloud.
+docker:
+  image: lscr.io/linuxserver/pairdrop:latest
+  port: 3000
+  restart: unless-stopped
+  environment:
+    PUID: 1000
+    PGID: 1000
+health:
+  endpoint: /
+  method: GET
+  expect_status: 200
+pangolin:
+  subdomain: drop
+llm_cost: low

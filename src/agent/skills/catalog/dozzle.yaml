@@ -1,0 +1,19 @@
+name: dozzle
+display: Dozzle
+replaces: Terminal docker logs
+icon: "\U0001F4CA"
+category: monitoring
+description: Real-time container log viewer in the browser. No setup needed.
+docker:
+  image: amir20/dozzle:latest
+  port: 8888
+  restart: unless-stopped
+  volumes:
+  - /var/run/docker.sock:/var/run/docker.sock:ro
+health:
+  endpoint: /
+  method: GET
+  expect_status: 200
+pangolin:
+  subdomain: logs
+llm_cost: low
