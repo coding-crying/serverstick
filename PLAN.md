@@ -6,7 +6,7 @@ Only things we've decided go here. Everything else stays in conversation until v
 
 ### Product
 
-USB stick that installs a preconfigured Debian self-hosting stack onto host storage. Not a persistent live OS — it installs to disk. One-time purchase, XMR mining funds ongoing API costs.
+**USB stick that installs a preconfigured Debian self-hosting stack onto host storage. Not a persistent live OS — it installs to disk.** One-time purchase, XMR mining funds ongoing API costs.
 
 **Core mission:** Help people get off surveillance services onto their own stack. Every service replaces something that harvests your data — searches, documents, photos, messages, file sharing.
 
@@ -40,6 +40,21 @@ Still need to validate: Does `sops exec-env` work cleanly with Docker Compose in
 Stock Debian netinst ISO + injected `preseed.cfg` built with `xorriso`. The preseed handles partitioning, user creation, packages. A `late_command` script runs the real setup (Docker, Pi, SOPS, etc.).
 
 Still need to validate: xorriso repack process, preseed reliability on varied hardware. **Untested.**
+
+### Setup Mode: GUI Kiosk → Headless
+
+First boot starts a minimal GUI stack so the user can run setup directly on the machine. After `/api/setup` completes, the system switches to headless `multi-user.target` permanently.
+
+- `serverstick-setup.target` — X11 + `matchbox-window-manager` + Chromium kiosk (`--no-sandbox --kiosk http://localhost:8080`)
+- After setup: `systemctl set-default multi-user.target` → reboot → no GUI, no Xorg, no Chromium
+- Emergency re-entry: `systemctl isolate serverstick-setup.target` brings kiosk back
+- **Laptop lid close:** `HandleLidSwitch=ignore` in `logind.conf` (preseed/late_command) so the machine stays on when closed
+- **Battery-less laptops:** Some throttle to 800MHz without a battery installed. Warn during setup if detected. *TBD: where in the UX to surface this warning.*
+
+**Physical UX (stickers in box):**
+- Device name sticker: `nick.serverstick.com`
+- Service quick-reference or QR code → homepage
+- Peel-off recovery card: Hetzner Storage Box username + blank line for password hint
 
 ### Dashboard: Svelte + FastAPI (Pi Agent)
 
@@ -84,6 +99,46 @@ Current test site: "nick" (siteId 14913). Blueprint auto-creates resources on fi
 
 **Provisioning flow:** Bootstrap writes `SERVERSTICK_STARTER_KEY` env var. Pi Agent `/api/setup` calls cloud API → cloud creates Pangolin site + blueprint → returns Newt credentials → device connects. If credentials omitted, device operates LAN-only.
 
+### Matrix (Synapse) — Communication Hub
+
+**Federation and bridges are core features, not add-ons.** A non-federated Matrix server is just a worse Slack. Without bridges, you're asking people to convince contacts to install a new app — the #1 reason privacy tools fail.
+
+| Component | Image | Port | Subdomain | RAM |
+|-----------|-------|------|-----------|-----|
+| Synapse | `matrix-org/synapse:latest` | 8008 | `matrix.{device}` | ~500MB (SQLite) |
+| Element Web | `vectorim/element-web:latest` | 8080 | `chat.{device}` | ~50MB (static) |
+
+**SQLite for v1** — fine for <50 users. PostgreSQL upgrade path via Pi Agent for power users.
+
+**Federation enabled by default:** `server_name = {device}.serverstick.com`. Federation traffic through Pangolin on 443 (no port 8448 needed). `.well-known/matrix/server` handled by Synapse.
+
+**Bridges (opt-in, per-service):**
+
+| Bridge | Replaces | Auth | Re-auth | RAM |
+|--------|----------|------|---------|-----|
+| WhatsApp | WhatsApp | QR code scan | Every ~14 days | ~250MB |
+| Discord | Discord | OAuth2 bot invite | Never | ~200MB |
+| Telegram | Telegram | Bot token + phone | Never | ~200MB |
+| Signal | Signal | Phone number linking | ~90 days | ~200MB |
+
+**Pi Agent guardrails** — the AI sysadmin value prop, made real:
+1. **Bridge health monitoring** — auto-detect down/degraded bridges, restart within 2 min (3 restarts in 10 min → alert user, stop restart-loop)
+2. **QR re-auth** — detect WhatsApp re-login needed, surface QR code in dashboard with notification
+3. **Federation health** — verify `.well-known` reachability, audit federation config, surface issues
+4. **Bridge setup/removal** — guided one-click flows via Pi Agent dashboard, dynamic app service registration
+5. **Rate limit protection** — detect 429s from remote servers, back off bridge message sending
+6. **Media cleanup** — periodic `synapse-compress-media` + size monitoring
+
+**Docker networking:** Matrix services use a dedicated `serverstick-matrix` bridge network (bridges reach Synapse via `http://synapse:8008`). Other services stay on host networking.
+
+**Minimum spec:** 4GB RAM for Synapse + Element + 1 bridge. 8GB for all 4 bridges. Pi Agent surfaces resource recommendations.
+
+**User IDs:** `@username:{device}.serverstick.com` — federation-ready from day one.
+
+**Custom domain (v2):** Allow users to bring their own domain for `@username:theirdomain.com`.
+
+Full spec: `references/matrix-spec.md`
+
 ### Backup: Same-Stick restic (included) + Cloud (paid tier)
 
 The USB stick installs Debian onto host storage, then **wipes and formats as a restic backup repository**.
@@ -104,9 +159,11 @@ The USB stick installs Debian onto host storage, then **wipes and formats as a r
 || Uptime Kuma | UptimeRobot/Pingdom | 3001 | `louislam/uptime-kuma` ||
 || Dozzle | Container logs | 8888 | `amir20/dozzle` ||
 || rembg | remove.bg | 7000 | `danielgatis/rembg` ||
-|| Watchtower | Auto-update | — | `containrrr/watchtower` (headless) ||
+| Watchtower | Auto-update | — | `containrrr/watchtower` (headless) |
+| Synapse | WhatsApp/Discord/Telegram | 8008 | `matrix-org/synapse` |
+| Element Web | Matrix web client | 8080 | `vectorim/element-web` |
 
-**Deferred to v2:** Tuwunel (Matrix), SearXNG, Home Assistant, IT-Tools, Pi web UI
+**Deferred to v2:** SearXNG, Home Assistant, IT-Tools, Pi web UI
 
 ### Development Model Preferences
 
@@ -160,7 +217,6 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 ## Not Yet Decided
 
 - XMR mining integration details (hosted vs independent, payout flow)
-- systemd target structure (setup.target → default.target)
 - Hardware tier classification for AI query limits
 - ISO build pipeline and per-customer key injection
 - How updates work post-install
@@ -182,5 +238,12 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - **AdGuard Home / Pi-hole in v1** — DNS blocking requires router config. Single point of failure for all DNS.
 - **Vaultwarden** — Backup failure = catastrophic data loss. Consequences out of proportion.
 - **Jellyfin + *arr stack** — Productizing piracy is legal liability.
-- **Matrix bridges in v1** — Each bridge is high support burden. Add later.
+- **Matrix bridges as unsupported add-ons** — Bridges are core features with Pi Agent guardrails (health monitoring, auto-restart, re-auth flows, guided setup), not optional footguns.
 - **IT-Tools** — No clear surveillance service it replaces. Doesn't fit the framing.
+
+### Security Invariants
+
+- **No baked secrets in ISO.** The preseed/ISO contains only public data. Starter keys come from the cloud API at first boot via one-time provisioning tokens.
+- **Embed bootstrap in ISO.** No `curl | bash` in the installer path. The ISO is self-contained. Network fetches are for Docker images and the Newt binary only.
+- **No remote text in LLM context.** LLM skill docs must never be fetched from URLs. Catalog updates are signed YAML data only. Help text lives in the Svelte dashboard.
+- **Secrets never enter LLM context.** The agent reports "configured/missing" boolean state, never decrypted values. `sops exec-env` is for systemd service startup only.
