@@ -139,6 +139,34 @@ async def get_service(service_name: str):
     }
 
 
+@app.post("/api/services/{service_name}/update")
+async def update_service(service_name: str):
+    """Pull new image and recreate container for a service."""
+    skill = skill_registry.get(service_name)
+    if not skill:
+        raise HTTPException(404, f"Service '{service_name}' not found")
+
+    try:
+        # Pull the latest image
+        image = skill.catalog_entry.get("docker", {}).get("image", "")
+        if image:
+            pull = subprocess.run(
+                ["docker", "pull", image],
+                capture_output=True, text=True, timeout=300
+            )
+            if pull.returncode != 0:
+                return {"service": service_name, "updated": False, "error": pull.stderr[:500]}
+
+        # Recreate the container
+        result = skill.stop()
+        result = skill.start()
+        return {"service": service_name, "updated": True, "output": result.get("output", "")}
+    except subprocess.TimeoutExpired:
+        raise HTTPException(500, "Image pull timed out (5 min limit)")
+    except Exception as e:
+        raise HTTPException(500, f"Update failed: {e}")
+
+
 @app.post("/api/services/{service_name}/{action}")
 async def service_action(service_name: str, action: str):
     """Start, stop, restart, install, or uninstall a Docker service."""
@@ -439,35 +467,6 @@ async def delete_backup(backup_file: str):
     except Exception as e:
         raise HTTPException(500, f"Delete failed: {e}")
 
-
-# ─── Update / Upgrade ────────────────────────────────────────────────
-
-@app.post("/api/services/{service_name}/update")
-async def update_service(service_name: str):
-    """Pull new image and recreate container for a service."""
-    skill = skill_registry.get(service_name)
-    if not skill:
-        raise HTTPException(404, f"Service '{service_name}' not found")
-
-    try:
-        # Pull the latest image
-        image = skill.catalog_entry.get("docker", {}).get("image", "")
-        if image:
-            pull = subprocess.run(
-                ["docker", "pull", image],
-                capture_output=True, text=True, timeout=300
-            )
-            if pull.returncode != 0:
-                return {"service": service_name, "updated": False, "error": pull.stderr[:500]}
-
-        # Recreate the container
-        result = skill.stop()
-        result = skill.start()
-        return {"service": service_name, "updated": True, "output": result.get("output", "")}
-    except subprocess.TimeoutExpired:
-        raise HTTPException(500, "Image pull timed out (5 min limit)")
-    except Exception as e:
-        raise HTTPException(500, f"Update failed: {e}")
 
 
 @app.post("/api/update-all")

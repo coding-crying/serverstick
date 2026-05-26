@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from collections import OrderedDict
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 
 # Add the agent directory to path so we can import main
@@ -114,22 +115,22 @@ def mock_check_output():
     }
 
     def _check_output(cmd, **kwargs):
-        cmd_str = cmd[0] if isinstance(cmd, list) else cmd
-        if "lscpu" in str(cmd):
+        cmd_str = str(cmd)
+        if "lscpu" in cmd_str:
             return outputs["lscpu"]
-        elif "free" in str(cmd):
-            return outputs["free"]
-        elif "hostname" in str(cmd) and "-I" in str(cmd):
+        elif "-I" in cmd_str:
             return outputs["hostname -I"]
-        elif "hostname" in str(cmd):
+        elif "hostname" in cmd_str:
             return outputs["hostname"]
+        elif "free" in cmd_str:
+            return outputs["free"]
         return ""
 
     with patch("main.subprocess.check_output", side_effect=_check_output) as mock:
         yield mock
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client(mock_registry, tmp_path):
     """Create an async test client with mocked dependencies."""
     with patch("main.skill_registry", mock_registry), \

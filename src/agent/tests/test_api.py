@@ -208,10 +208,11 @@ async def test_delete_backup_not_found(client):
 async def test_update_service(client, mock_subprocess):
     """POST /api/services/{name}/update pulls new image."""
     mock_subprocess.return_value = MagicMock(returncode=0, stdout="Pulled latest", stderr="")
-    resp = await client.post("/api/services/stirling-pdf/update")
+    # homepage is the only running service in the mock registry
+    resp = await client.post("/api/services/homepage/update")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["service"] == "stirling-pdf"
+    assert data["service"] == "homepage"
 
 
 @pytest.mark.asyncio
