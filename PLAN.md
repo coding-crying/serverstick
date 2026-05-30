@@ -10,6 +10,98 @@ Only things we've decided go here. Everything else stays in conversation until v
 
 **Core mission:** Help people get off surveillance services onto their own stack. Every service replaces something that harvests your data — searches, documents, photos, messages, file sharing.
 
+### Competitive Research: Harbor (av/harbor)
+
+**Verdict: Steal the patterns, don't adopt the tool.**
+
+Harbor is the closest analog to ServerStick's service orchestration. Single maintainer (Ivan Cherepanov), 3K stars, 140+ AI/LLM services, daily commits. But:
+
+**What's good (patterns to adopt):**
+- `compose.x.A-B.yml` cross-service overlay system — when both services are active, overlay adds env vars, network links, volume mounts. Clean, composable.
+- `install.md` per service that you pipe into Claude Code — LLM-consumable install narratives.
+- Service metadata with categorization, tags, and hardware awareness.
+- "One command brings up a pre-wired stack" philosophy.
+
+**What's bad (why we don't build on it):**
+- **235KB bash monolith** as the CLI. Entire orchestration engine is one shell script. Command injection vulnerabilities (CWE-78) found in multiple code paths.
+- **One-man show** — 97% of commits from one person. Bus factor = 1.
+- **Security posture** — 78 potential security issues found (7 critical, 9 high), no security policy, no responsible disclosure, no security.md. Not suitable for a consumer product.
+- **Ghost town engagement** — 3K stars but zero Reddit threads, HN posts flopped (0-4 points), GitHub discussions are 3 comments deep. Stars are passive bookmarks, not users.
+- **LLM-stack only** — 140 services are all AI/LLM tools. Not general self-hosting.
+
+**What we take from Harbor:**
+1. The compose overlay pattern (already in RECIPE-SPEC.md as `compose.x.A-B.yml`)
+2. Service metadata format (already in our YAML catalog)
+3. The "pre-wired stack" philosophy (Pi Agent's core value prop)
+
+### Competitive Research: EverOS (EverMind/印奇智能)
+
+**Verdict: Skip. Marketing spend, not organic demand.**
+
+EverOS is an AI memory/agent framework (6K stars). The hackathon strategy is user acquisition — $5K prize pools buy 50+ integration projects. Open-source the framework, close the cloud (evermind.ai). Standard "open core, closed cloud" model.
+
+**Why we don't use it:**
+- Memory architecture (MemCell, Workspace, Dialectic) is overengineered for service management.
+- Hackathon-driven stars are vanity metrics, not community signal.
+- Chinese AI company entering global markets — aggressive growth posture, burn rate concern.
+- Landing page is v0.dev-quality. 6K stars but no substance past the fold.
+- We need service orchestration, not a memory layer.
+
+**Memory stack decision for ServerStick:**
+- **v1:** Hermes built-in memory (proven, works, no extra infra).
+- **v2:** Evaluate Honcho for dialectic/agentic memory if complexity warrants it.
+- **Skip:** EverOS, LangChain, LlamaIndex — all solve problems we don't have.
+
+### LLM Recipe Book: Open Service Catalog for AI-Driven Installation
+
+**The recipe book is the core IP, not the USB stick.** The stick is the delivery mechanism — the recipes are what make it work without a human sysadmin.
+
+**What it is:** Structured, LLM-consumable recipes for self-hosted services. Each recipe contains:
+- **What it does** (1-2 sentences, no marketing fluff)
+- **Hardware requirements** (CPU level x86_v1/v2/v3, min RAM, disk, GPU)
+- **Network requirements** (ports, DNS, reverse proxy config)
+- **Step-by-step install** with decision points and conditionals
+- **Common failure modes** + recovery steps
+- **Post-install verification** (curl commands, health checks)
+- **Surveillance service replaced** (the "why" for each service)
+
+**Why it's novel:**
+- **Harbor** (★3k) — closest analog, but LLM-stack only (Ollama, vLLM, Open WebUI). Has `install.md` you pipe into Claude Code, but only for AI services. One-man show, bash monolith, poor security posture.
+- **claude-homelab** (★50) — SKILL.md files per homelab service, but Claude Code-specific, not a standalone catalog.
+- **CasaOS/Coolify app stores** — Docker Compose manifests in JSON/YAML. Machine-readable but not LLM-optimized: no natural language docs, no decision trees, no error recovery.
+- **MCP registries** (Smithery, ToolHive, mcp.run) — Narrowly scoped to MCP servers, not general self-hosting.
+
+**Nobody's doing general-purpose, LLM-consumable recipes for self-hosted services.** This is the gap.
+
+**Format:** YAML frontmatter (machine-parseable metadata) + Markdown body (natural language install narrative). LLMs read both; dashboards parse the frontmatter.
+
+```yaml
+# recipes/rembg.yaml
+name: rembg
+replaces: remove.bg
+cpu_level: x86_v2        # SSE4.2, 2008+
+min_ram: 2GB
+ports: [7000]
+image: danielgatis/rembg
+tags: [privacy, image-processing, gpu-optional]
+---
+
+## What It Does
+Removes image backgrounds. Replaces remove.bg and similar services that
+upload your photos to unknown servers.
+
+## Install
+1. Add to docker-compose.yml under `services:`
+   ...
+```
+
+**Open-core model:**
+- **Open:** Recipe catalog on GitHub. Community PRs welcome ("add your service").
+- **Closed/branded:** USB stick experience, Pangolin tunnel, Pi Agent orchestration, dashboard UX.
+- The catalog becomes the standard reference for "how to install self-hosted services with AI assistance" — drives brand awareness, positions ServerStick as the authority.
+
+**Publishing strategy:** Open the recipe catalog as a standalone repo (`serverstick/recipes`) before the stick ships. Let it grow. Each recipe is a self-contained file that any agent (Claude, Codex, Hermes, raw LLM) can consume. The Pi Agent just reads them locally.
+
 ### LLM Harness: Direct FastAPI + TokenRouter (NOT Pi)
 
 **Pi as harness REJECTED** — Running Pi in RPC mode is overkill for service management. Direct FastAPI + model router is simpler, faster, no subprocess complexity. Pi's skill concept lives on as YAML catalog + Python hooks.
@@ -73,6 +165,41 @@ Works on:
 - Old laptop with display (Chromium kiosk)
 - Headless box (mDNS + phone/laptop browser)
 - Remote via Pangolin tunnel at `dash.{device}.serverstick.com`
+
+### Local-First DNS: Per-Device Split-Horizon (Pi Agent)
+
+**Problem:** All traffic through the Pangolin VPS tunnel wastes bandwidth and adds latency — especially for media streaming on the LAN. But making the stick the network DNS server (Pi-hole/AdGuard) creates a SPOF: stick dies = whole house loses DNS.
+
+**Solution: Per-device agent, not network-level DNS.** Same model as Tailscale's MagicDNS.
+
+The Pi Agent installs on each user device (phone, laptop, tablet) and only intercepts `*.serverstick.com` queries — everything else uses the device's normal DNS, completely untouched.
+
+**How it works:**
+- Pi Agent detects if it's on the same LAN as the stick (can it reach the stick's LAN IP?)
+- **On LAN:** Writes a domain-specific DNS override for `*.serverstick.com` → stick's LAN IP
+  - macOS: `/etc/resolver/serverstick.com`
+  - Windows: NRPT rule
+  - Linux: `/etc/hosts` entry or dnsmasq snippet
+- **Remote:** Leaves public DNS in place → traffic routes through Pangolin tunnel as normal
+- **Stick goes down?** → Self-hosted services unreachable (obviously), but Netflix/Google/everything else works fine. No SPOF.
+- **No router changes. Zero.**
+
+**Why this matters:**
+- Bandwidth-heavy services (future: Jellyfin, Immich, Nextcloud) stay on LAN — never touch our VPS. User confirms: most streaming won't leave the home anyway.
+- Same domain names work everywhere — users don't need to remember LAN IPs vs tunnel URLs
+- Zero config — Pi Agent generates DNS overrides from the service registry
+- Pangolin tunnel only carries lightweight remote access traffic (dashboard, API, text services)
+
+**Bring-your-own-domain is free.** DNS is cheap. We offer `*.serverstick.com` subdomains for free too. The paid product is **Pangolin tunnel routing** — that's our VPS bandwidth. Only stick buyers get remote access through our infrastructure.
+
+**Fallback:** If the agent can't detect the stick on LAN, it leaves public DNS records in place. Everything routes through Pangolin — suboptimal but works.
+
+**Pricing implication:**
+- **Free:** Self-host, bring domain, local-only (no Pangolin tunnel)
+- **Stick purchase:** Pangolin tunnel included, remote access out of the box
+- **Bandwidth add-on:** Only if someone hammers the tunnel
+
+**Install UX for Pi Agent:** One command (`curl | bash` or platform packages). Detects OS, writes the right DNS override, daemon runs in background to detect LAN/remote and swap targets. **Untested** — need to validate per-platform DNS override mechanisms.
 
 ### Tunneling: Pangolin Cloud (verified, operational)
 
@@ -150,18 +277,20 @@ The USB stick installs Debian onto host storage, then **wipes and formats as a r
 
 **Every service replaces a surveillance service.** Not "homelab tools" — "get off spyware."
 
-|| Service | Replaces | Port | Image ||
-||---------|----------|------|-------||
-|| Homepage | Dashboard spyware | 3002 | `ghcr.io/benphelps/homepage` ||
-|| Stirling-PDF | ilovepdf/smallpdf | 8440 | `frooodle/s-pdf` ||
-|| PrivateBin | Pastebin/gists | 8084 | `privatebin/nginx-fpm-alpine` ||
-|| PairDrop | WeTransfer/Drive | 3000 | `lscr.io/linuxserver/pairdrop` ||
-|| Uptime Kuma | UptimeRobot/Pingdom | 3001 | `louislam/uptime-kuma` ||
-|| Dozzle | Container logs | 8888 | `amir20/dozzle` ||
-|| rembg | remove.bg | 7000 | `danielgatis/rembg` ||
-| Watchtower | Auto-update | — | `containrrr/watchtower` (headless) |
-| Synapse | WhatsApp/Discord/Telegram | 8008 | `matrix-org/synapse` |
-| Element Web | Matrix web client | 8080 | `vectorim/element-web` |
+**Bandwidth classification:** Most streaming stays on LAN. Services marked `tunnel_safe` work well over Pangolin; heavy services are LAN-primary with split-horizon DNS.
+
+|| Service | Replaces | Port | Image | Tunnel Safe ||
+||---------|----------|------|-------|-------------||
+|| Homepage | Dashboard spyware | 3002 | `ghcr.io/benphelps/homepage` | ✅ ||
+|| Stirling-PDF | ilovepdf/smallpdf | 8440 | `frooodle/s-pdf` | ✅ ||
+|| PrivateBin | Pastebin/gists | 8084 | `privatebin/nginx-fpm-alpine` | ✅ ||
+|| PairDrop | WeTransfer/Drive | 3000 | `lscr.io/linuxserver/pairdrop` | ✅ (LAN) ||
+|| Uptime Kuma | UptimeRobot/Pingdom | 3001 | `louislam/uptime-kuma` | ✅ ||
+|| Dozzle | Container logs | 8888 | `amir20/dozzle` | ✅ ||
+|| rembg | remove.bg | 7000 | `danielgatis/rembg` | ⚠️ (image upload) ||
+|| Watchtower | Auto-update | — | `containrrr/watchtower` | (headless) ||
+|| Synapse | WhatsApp/Discord/Telegram | 8008 | `matrix-org/synapse` | ✅ ||
+|| Element Web | Matrix web client | 8080 | `vectorim/element-web` | ✅ ||
 
 **Deferred to v2:** SearXNG, Home Assistant, IT-Tools, Pi web UI
 
@@ -178,9 +307,10 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 
 ### ✅ Completed
 
-- `src/agent/main.py` — FastAPI backend with 11 API routes (status, services, catalog, setup, chat, hardware, tunnel)
+- `src/agent/main.py` — FastAPI backend with 15+ API routes (status, services, catalog, setup, chat, hardware, tunnel, resources, backups, network, health, logs, update-all, WebSocket)
 - `src/agent/router.py` — Two-tier LLM router (DeepSeek V4 Flash default → GLM 5.1 upgrade)
-- `src/agent/skills/` — Skill plugin system with SkillRegistry + 8 YAML catalog entries
+- `src/agent/skills/` — Skill plugin system with SkillRegistry + YAML catalog entries
+- CPU feature detection — `/api/hardware` detects x86_v1/v2/v3 level, `/api/catalog` filters incompatible services
 - `src/agent/dashboard/` — SvelteKit dashboard with setup wizard + service toggle UI
 - `src/agent/Dockerfile` — Multi-stage build (Python backend + Node dashboard build)
 - `src/agent/requirements.txt` — Python dependencies
@@ -193,6 +323,9 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - `src/cloud/api/v1/provision.js` — Vercel serverless provisioning endpoint (stub)
 - `src/config/preseed.cfg.template` — Debian auto-install template
 - `ARCHITECTURE.md` — Full architecture spec
+- `RECIPE-SPEC.md` — Recipe format spec (YAML frontmatter + Markdown body, compose overlays, CPU levels, failure recovery, privacy framing)
+- **VM 101 test environment** — Proxmox VMID 101 @ 10.0.0.19, Debian 12, 8GB RAM, Docker 29.5.2, Pi Agent running on :8080
+- **Competitive research** — Harbor (steal patterns, don't adopt), EverOS (skip), claude-homelab (SKILL.md format reference)
 
 ### ⬜ In Progress / Next
 
@@ -200,6 +333,9 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - Cloud `/v1/provision` — real Pangolin Blueprint + Provisioning Key API calls
 - SOPS/age key generation flow testing
 - ISO packaging — xorriso repack + preseed injection
+- Additional skill YAML catalog entries (only rembg exists; need homepage, stirling-pdf, privatebin, pairdrop, uptime-kuma, dozzle, synapse, element)
+- Split-horizon DNS agent (Pi Agent on user devices) — per-platform DNS override validation
+- Matrix spec implementation (references/matrix-spec.md exists, no code yet)
 
 ### 🗑️ Removed (superseded)
 
@@ -220,12 +356,12 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - Hardware tier classification for AI query limits
 - ISO build pipeline and per-customer key injection
 - How updates work post-install
-- Memory/RAM requirements per service (can all v1 services run on 4GB?)
 - Multi-device management UX (central dashboard vs per-device)
+- Which services are "LAN-only" vs "tunnel-safe" — user notes most streaming won't leave the home, so heavy bandwidth services (Jellyfin/Immich in v2) should default to LAN-only with split-horizon DNS
 
 ---
 
-## Explicitly Rejected
+### Explicitly Rejected
 
 - **Pi as active agent harness** — Running Pi in RPC mode as the brain is overkill. Direct FastAPI + model router is simpler. Pi's skill concept lives in YAML catalog + Python hooks.
 - **Forking Pi** — Maintaining a fork is a trap.
@@ -240,6 +376,9 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - **Jellyfin + *arr stack** — Productizing piracy is legal liability.
 - **Matrix bridges as unsupported add-ons** — Bridges are core features with Pi Agent guardrails (health monitoring, auto-restart, re-auth flows, guided setup), not optional footguns.
 - **IT-Tools** — No clear surveillance service it replaces. Doesn't fit the framing.
+- **Building on Harbor** — Bash monolith, CWE-78 command injection, one-man show (97% of commits), zero community engagement. Steal the overlay pattern and metadata format, don't depend on the project.
+- **EverOS / EverMind for memory** — Overengineered for service management. Hackathon-driven stars, not real adoption. Memory needs for v1 are simple; Hermes built-in suffices.
+- **LangChain / LlamaIndex as orchestration** — Both solve RAG/chain problems we don't have. Pi Agent's skill engine is simpler and purpose-built.
 
 ### Security Invariants
 

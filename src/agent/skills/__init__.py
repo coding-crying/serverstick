@@ -47,16 +47,26 @@ class SkillBase:
         shared_compose = SS_DIR / "services" / "docker-compose.yml"
         if shared_compose.exists():
             # Shared compose mode — just bring up this service
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(shared_compose), "up", "-d", self.name],
-                capture_output=True, text=True, timeout=120
-            )
-            return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "shared"}
+            try:
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(shared_compose), "up", "-d", self.name],
+                    capture_output=True, text=True, timeout=120
+                )
+                return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "shared"}
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                return {"success": False, "output": str(e), "mode": "shared"}
 
         # Per-service compose mode
-        self.compose_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.compose_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            return {"success": False, "output": f"Cannot create {self.compose_dir} (permission denied)", "mode": "individual"}
+
         compose = self._generate_compose()
-        (self.compose_dir / "docker-compose.yml").write_text(compose)
+        try:
+            (self.compose_dir / "docker-compose.yml").write_text(compose)
+        except PermissionError:
+            return {"success": False, "output": f"Cannot write to {self.compose_dir / 'docker-compose.yml'}", "mode": "individual"}
 
         result = self._compose("up", "-d")
         return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "individual"}
@@ -66,15 +76,18 @@ class SkillBase:
         shared_compose = SS_DIR / "services" / "docker-compose.yml"
         if shared_compose.exists():
             # Shared compose — stop and remove this service's container
-            result = subprocess.run(
-                ["docker", "compose", "-f", str(shared_compose), "stop", self.name],
-                capture_output=True, text=True, timeout=60
-            )
-            subprocess.run(
-                ["docker", "compose", "-f", str(shared_compose), "rm", "-f", self.name],
-                capture_output=True, text=True, timeout=30
-            )
-            return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "shared"}
+            try:
+                result = subprocess.run(
+                    ["docker", "compose", "-f", str(shared_compose), "stop", self.name],
+                    capture_output=True, text=True, timeout=60
+                )
+                subprocess.run(
+                    ["docker", "compose", "-f", str(shared_compose), "rm", "-f", self.name],
+                    capture_output=True, text=True, timeout=30
+                )
+                return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "shared"}
+            except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+                return {"success": False, "output": str(e), "mode": "shared"}
 
         result = self._compose("down")
         return {"success": result.returncode == 0, "output": result.stdout + result.stderr, "mode": "individual"}
@@ -204,9 +217,19 @@ class SkillBase:
         """Run a docker compose command for this service's per-service compose."""
         compose_file = self.compose_dir / "docker-compose.yml"
         if not compose_file.exists():
-            self.compose_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                self.compose_dir.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr=f"Cannot create {self.compose_dir} (permission denied)"
+                )
             compose = self._generate_compose()
-            compose_file.write_text(compose)
+            try:
+                compose_file.write_text(compose)
+            except PermissionError:
+                return subprocess.CompletedProcess(
+                    args=[], returncode=1, stdout="", stderr=f"Cannot write {compose_file} (permission denied)"
+                )
 
         return subprocess.run(
             ["docker", "compose", "-f", str(compose_file)] + list(args),

@@ -10,6 +10,7 @@ docker:
   port: 7000
   restart: unless-stopped
   volumes: []
+  cpu_level: x86_v2  # NumPy requires SSE4.2 (Intel 2008+, AMD 2011+)
 health:
   endpoint: /
   method: GET

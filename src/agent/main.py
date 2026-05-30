@@ -40,12 +40,31 @@ CATALOG_DIR = Path(__file__).parent / "skills" / "catalog"
 COMPOSE_FILE = SS_DIR / "services" / "docker-compose.yml"
 DASHBOARD_DIR = Path(__file__).parent / "dashboard" / "build"
 PROVISIONED_FILE = SS_DIR / "provisioned"
-NEWT_CONF_DIR = Path("/etc/newt")
+NEWT_CONF_DIR = Path(os.environ.get("SERVERSTICK_NEWT_CONF", "/etc/newt"))
 BACKUP_DIR = SS_DATA / "backups"
+
+# Ensure directories exist (permission-safe)
+for _d in [SS_DIR, SS_DATA, BACKUP_DIR]:
+    try:
+        _d.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        pass  # Running non-root; dirs will be created by bootstrap on target
 
 PORT = int(os.environ.get("SERVERSTICK_PORT", "8080"))
 CLOUD_URL = os.environ.get("SERVERSTICK_CLOUD_URL", "https://serverstick.vercel.app/api/v1/provision")
 STARTER_KEY = os.environ.get("SERVERSTICK_STARTER_KEY", "")
+
+
+def _docker_available() -> bool:
+    """Check if Docker daemon is accessible."""
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 DEVICE_ID = os.environ.get("SERVERSTICK_DEVICE_ID", "")
 
 # ─── Global state ───────────────────────────────────────────────────
@@ -87,7 +106,7 @@ app.add_middleware(
 
 class SetupRequest(BaseModel):
     device_name: str
-    services: list[str]
+    services: list[str] = []  # empty = install all recommended services
     starter_key: str | None = None
 
 class ServiceAction(BaseModel):
@@ -113,6 +132,7 @@ async def get_status():
     return {
         "device_name": device_name,
         "provisioned": provisioned,
+        "docker_available": _docker_available(),
         "services": services_status,
         "tunnel": get_tunnel_status(),
     }
@@ -179,6 +199,16 @@ async def service_action(service_name: str, action: str):
 
     result = getattr(skill, action)()
     return {"service": service_name, "action": action, **result}
+
+
+@app.delete("/api/services/{service_name}")
+async def uninstall_service(service_name: str):
+    """RESTful uninstall — removes container and compose config."""
+    skill = skill_registry.get(service_name)
+    if not skill:
+        raise HTTPException(404, f"Service '{service_name}' not found")
+    result = skill.uninstall()
+    return {"service": service_name, "action": "uninstall", **result}
 
 
 # ─── Health Check APIs ────────────────────────────────────────────────
@@ -366,20 +396,23 @@ async def _stream_logs(service_name: str):
 @app.get("/api/backups")
 async def list_backups():
     """List all backup files."""
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     backups = []
-    for f in sorted(BACKUP_DIR.glob("*.tar.gz"), reverse=True):
-        stat = f.stat()
-        # Parse service name from filename: {service}_{timestamp}.tar.gz
-        parts = f.stem.replace(".tar", "").rsplit("_", 1)
-        service = parts[0] if len(parts) == 2 else "unknown"
-        backups.append({
-            "filename": f.name,
-            "service": service,
-            "size_bytes": stat.st_size,
-            "size_mb": round(stat.st_size / (1024 * 1024), 1),
-            "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-        })
+    if BACKUP_DIR.exists():
+        for f in sorted(BACKUP_DIR.glob("*.tar.gz"), reverse=True):
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            # Parse service name from filename: {service}_{timestamp}.tar.gz
+            parts = f.stem.replace(".tar", "").rsplit("_", 1)
+            service = parts[0] if len(parts) == 2 else "unknown"
+            backups.append({
+                "filename": f.name,
+                "service": service,
+                "size_bytes": stat.st_size,
+                "size_mb": round(stat.st_size / (1024 * 1024), 1),
+                "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
     return {"backups": backups}
 
 
@@ -394,7 +427,11 @@ async def create_backup(service_name: str):
     if not data_dir.exists():
         raise HTTPException(404, f"No data directory for '{service_name}' at {data_dir}")
 
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(500, f"Cannot create backup directory: {BACKUP_DIR}")
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_file = BACKUP_DIR / f"{service_name}_{timestamp}.tar.gz"
 
@@ -637,8 +674,11 @@ async def setup_device(req: SetupRequest):
     # ── Step 4: Mark as provisioned ──
     device_name = name
     provisioned = True
-    SS_DIR.mkdir(parents=True, exist_ok=True)
-    PROVISIONED_FILE.write_text(device_name)
+    try:
+        SS_DIR.mkdir(parents=True, exist_ok=True)
+        PROVISIONED_FILE.write_text(device_name)
+    except PermissionError:
+        pass  # Will be persisted properly on target device (runs as root)
 
     response = {
         "status": "provisioned",
@@ -665,20 +705,41 @@ async def chat(req: ChatRequest):
 
 @app.get("/api/catalog")
 async def get_catalog():
-    """Full service catalog with categories."""
+    """Full service catalog with categories and CPU compatibility."""
+    # Get current CPU level for compatibility checks
+    host_level = "x86_v1"
+    level_rank = {"x86_v1": 0, "x86_v2": 1, "x86_v3": 2}
+    try:
+        flags_raw = subprocess.check_output(
+            ["grep", "-m1", "flags", "/proc/cpuinfo"], text=True, timeout=5
+        )
+        flags = set(flags_raw.split())
+        if "avx2" in flags and "fma" in flags:
+            host_level = "x86_v3"
+        elif "sse4_2" in flags and "popcnt" in flags:
+            host_level = "x86_v2"
+    except Exception:
+        pass
+
     by_category = {}
     for name, skill in skill_registry.skills.items():
         cat = skill.catalog_entry.get("category", "other")
-        by_category.setdefault(cat, []).append({
+        entry = {
             "name": name,
             **skill.catalog_entry,
-        })
+        }
+        # CPU compatibility check
+        svc_level = skill.catalog_entry.get("docker", {}).get("cpu_level", "x86_v1")
+        entry["cpu_compatible"] = level_rank.get(host_level, 0) >= level_rank.get(svc_level, 0)
+        entry["cpu_level_required"] = svc_level
+        entry["cpu_level_host"] = host_level
+        by_category.setdefault(cat, []).append(entry)
     return by_category
 
 
 @app.get("/api/hardware")
 async def get_hardware():
-    """Hardware detection — CPU, RAM, disk, GPU."""
+    """Hardware detection — CPU, RAM, disk, GPU, CPU feature level."""
     hardware = {}
     try:
         cpu = subprocess.check_output(
@@ -691,6 +752,32 @@ async def get_hardware():
                 hardware["cpu_cores"] = int(line.split(":")[1].strip())
     except Exception:
         pass
+
+    # CPU feature level detection — determines which service images can run
+    # x86_v1: baseline (any 64-bit CPU, 2003+)
+    # x86_v2: SSE4.2 + POPCNT (Intel Nehalem 2008+, AMD Bulldozer 2011+)
+    # x86_v3: AVX2 + FMA (Intel Haswell 2013+, AMD Zen 2017+)
+    try:
+        flags_raw = subprocess.check_output(
+            ["grep", "-m1", "flags", "/proc/cpuinfo"], text=True, timeout=5
+        )
+        flags = set(flags_raw.split())
+        hardware["cpu_flags"] = {
+            "sse4_2": "sse4_2" in flags,
+            "avx2": "avx2" in flags,
+            "popcnt": "popcnt" in flags,
+            "fma": "fma" in flags,
+        }
+        # Determine x86 microarch level
+        if "avx2" in flags and "fma" in flags:
+            hardware["cpu_level"] = "x86_v3"
+        elif "sse4_2" in flags and "popcnt" in flags:
+            hardware["cpu_level"] = "x86_v2"
+        else:
+            hardware["cpu_level"] = "x86_v1"
+    except Exception:
+        hardware["cpu_level"] = "unknown"
+        hardware["cpu_flags"] = {}
 
     try:
         mem = subprocess.check_output(["free", "-g"], text=True, timeout=5)
@@ -851,22 +938,32 @@ def get_tunnel_status() -> dict:
 
 def _write_newt_config(newt_id: str, newt_secret: str):
     """Write Newt tunnel configuration."""
-    NEWT_CONF_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        NEWT_CONF_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        return  # Will be configured on target device (runs as root)
+
     newt_conf = {
         "newtId": newt_id,
         "secret": newt_secret,
         "endpoint": "gerbil.pangolin.net:50120",
     }
     (NEWT_CONF_DIR / "newt.json").write_text(json.dumps(newt_conf, indent=2))
-    os.chmod(NEWT_CONF_DIR / "newt.json", 0o600)
+    try:
+        os.chmod(NEWT_CONF_DIR / "newt.json", 0o600)
+    except OSError:
+        pass
 
     env_file = SS_DIR / "pangolin.env"
-    env_file.write_text(
-        f"NEWT_ID={newt_id}\n"
-        f"NEWT_SECRET=***\n"
-        f"NEWT_ENDPOINT=gerbil.pangolin.net:50120\n"
-    )
-    os.chmod(env_file, 0o600)
+    try:
+        env_file.write_text(
+            f"NEWT_ID={newt_id}\n"
+            f"NEWT_SECRET=***\n"
+            f"NEWT_ENDPOINT=gerbil.pangolin.net:50120\n"
+        )
+        os.chmod(env_file, 0o600)
+    except (PermissionError, OSError):
+        pass
 
 
 def _enable_newt_service():
