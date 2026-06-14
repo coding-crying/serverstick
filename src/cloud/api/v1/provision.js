@@ -6,7 +6,7 @@
 // Body: { device_id, device_name, starter_key, services[] }
 // Returns: { site_id, newt_id, newt_secret, resources[] }
 
-const PANGOLIN_API = 'https://app.pangolin.net/api/v1';
+const PANGOLIN_API = 'https://api.pangolin.net/v1';
 
 // Service catalog — maps service name to Pangolin resource config
 const SERVICE_CATALOG = {
@@ -61,7 +61,7 @@ export default async function handler(req, res) {
   // Get Pangolin API key from env
   const pangolinKey = process.env.PANGOLIN_API_KEY;
   const orgId = process.env.PANGOLIN_ORG_ID || 'org_oz3r7e5oiug17wj';
-  const domainId = process.env.PANGOLIN_DOMAIN_ID || 'serverstick.com';
+  const domainId = process.env.PANGOLIN_DOMAIN_ID || 'xf75k3jyq73czxm';
 
   if (!pangolinKey) {
     return res.status(500).json({ error: 'Pangolin API key not configured' });
@@ -70,7 +70,7 @@ export default async function handler(req, res) {
   try {
     // Step 1: Create a Pangolin site for this device
     const siteRes = await fetch(`${PANGOLIN_API}/org/${orgId}/site`, {
-      method: 'POST',
+      method: 'PUT',
       headers: {
         'Authorization': `Bearer ${pangolinKey}`,
         'Content-Type': 'application/json',
@@ -97,8 +97,8 @@ export default async function handler(req, res) {
       const subdomain = `${catalog.subdomain}.${cleanName}`;
 
       // Create HTTP resource
-      const resourceRes = await fetch(`${PANGOLIN_API}/resource`, {
-        method: 'POST',
+      const resourceRes = await fetch(`${PANGOLIN_API}/org/${orgId}/resource`, {
+        method: 'PUT',
         headers: {
           'Authorization': `Bearer ${pangolinKey}`,
           'Content-Type': 'application/json',
@@ -107,7 +107,8 @@ export default async function handler(req, res) {
           name: catalog.name,
           subdomain: subdomain,
           domainId: domainId,
-          type: 'http',
+          http: true,
+          protocol: 'tcp',
         }),
       });
 
@@ -121,7 +122,7 @@ export default async function handler(req, res) {
 
       // Create target pointing to the site
       await fetch(`${PANGOLIN_API}/resource/${resourceId}/target`, {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'Authorization': `Bearer ${pangolinKey}`,
           'Content-Type': 'application/json',

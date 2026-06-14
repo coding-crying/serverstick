@@ -133,6 +133,67 @@ Stock Debian netinst ISO + injected `preseed.cfg` built with `xorriso`. The pres
 
 Still need to validate: xorriso repack process, preseed reliability on varied hardware. **Untested.**
 
+### Boot & Install UX: Live Boot with Smart Drive Selection
+
+**Decision: Keep live boot.** The ISO boots from USB into a Debian installer environment, then installs to the host's internal drive. This is safer than running an installer from an already-running OS.
+
+**Why live boot (not install-from-running-OS):**
+1. **No mounted-filesystem conflicts** — Can't format/overwrite a drive with active partitions. Live boot = target disk is cold.
+2. **Consistent environment** — Known Debian installer every time. No "what distro, what packages, is Docker already there" variance.
+3. **Recovery for free** — Same USB stick boots into a recovery environment if install goes sideways or disk dies later.
+4. **Drive selection safety** — The installer is running from USB, so the target drive is never the running OS. Easy to enumerate and filter.
+
+**The boot problem: old Windows laptops don't boot USB by default.** They prioritize the internal drive. Three ways to solve this, in order of user-friendliness:
+
+1. **Windows Advanced Startup (primary path — 90%+ of target hardware):**
+   - Settings → Recovery → Advanced startup → "Restart now" → "Use a device" → USB
+   - No BIOS key, no firmware menus, fully GUI-driven
+   - Print this path on the stick or included card: "Plug in → Settings → Recovery → Restart from USB"
+
+2. **BIOS boot menu key (fallback):**
+   - Dell/Lenovo: F12 | HP: F9 | ASUS: Esc | Others: varies
+   - Include a small cheat sheet card or print on the stick sleeve
+   - Intimidating for non-technical users but universally works
+
+3. **BIOS boot order change (last resort):**
+   - F2/Del to enter BIOS, move USB above hard drive
+   - Most intimidating, requires changing it back later
+
+4. **Windows autorun helper (nice-to-have):**
+   - Small `index.html` that auto-opens on USB plug-in under Windows
+   - Shows: "To install ServerStick, restart from this USB. Here's how →" with step-by-step
+   - Gives immediate feedback that the stick does something
+
+**UEFI/Secure Boot compatibility:**
+- Pre-2012 laptops: Legacy BIOS only. Works fine, just need boot menu key.
+- 2012-2020: UEFI with Secure Boot. Debian 12's signed shim handles most cases.
+- Very new: Secure Boot on by default. Debian's signed bootloader covers this.
+- The repacked ISO handles UEFI + Legacy dual boot already.
+
+**Drive selection UX (the one decision point during install):**
+
+The preseed `late_command` runs a drive selection script before partitioning. This replaces Debian's default partitioning screen:
+
+1. **Auto-detect single target** — If exactly one non-USB drive exists, skip the prompt and install there. Most target hardware (old laptop, single-drive desktop) has one disk.
+2. **Show human-readable info** — Drive size + model name ("500GB Samsung SSD 860"), not device paths. Multi-disk users pick from a list they can actually read.
+3. **Destructive warning with model name** — "This will ERASE everything on Samsung SSD 860 (500GB). Continue?" — not just "are you sure."
+4. **Refuse to install to USB** — Detect boot device from `/proc/cmdline` and filter it out. Can't accidentally nuke the installer.
+5. **Size sanity check** — Refuse targets <8GB. Catches accidental selection of tiny partitions or SD card slots.
+6. **Multi-disk guardrail (v2)** — "Which drive has Windows on it?" → mark and exclude. Most users don't have multi-disk setups.
+
+**Flow summary:**
+```
+Plug in USB → Windows: Settings → Recovery → Restart from USB
+                                    (or: press F12/F9/Esc at boot)
+  → Debian installer boots (live environment)
+  → Drive selection script runs:
+      → 1 drive found? → "Install to Samsung SSD 860 (500GB)?" → confirm → install
+      → N drives found? → Pick from list → "ERASE [model]?" → confirm → install
+  → Preseed handles partitioning, packages, user creation
+  → late_command runs bootstrap (Docker, Pi Agent, SOPS, services)
+  → Reboot → Pi Agent setup wizard on :8080
+```
+
 ### Setup Mode: GUI Kiosk → Headless
 
 First boot starts a minimal GUI stack so the user can run setup directly on the machine. After `/api/setup` completes, the system switches to headless `multi-user.target` permanently.
@@ -201,13 +262,53 @@ The Pi Agent installs on each user device (phone, laptop, tablet) and only inter
 
 **Install UX for Pi Agent:** One command (`curl | bash` or platform packages). Detects OS, writes the right DNS override, daemon runs in background to detect LAN/remote and swap targets. **Untested** — need to validate per-platform DNS override mechanisms.
 
-### Tunneling: Pangolin Cloud (verified, operational)
+### Provisioning API: Middleman Proxy (NOT direct Pangolin key)
 
-Using Pangolin Cloud (managed, free tier) for tunneling. Each device = 1 Pangolin site with N resources.
+**The Pangolin API key never touches the stick.** A middleman API sits between ServerStick devices and Pangolin Cloud.
 
-**Pattern:** `{service}.{device}.serverstick.com` (e.g. `pdf.nick.serverstick.com`)
+**Architecture:**
+```
+ServerStick (Pi)                    Our API (middleman)              Pangolin API
+     │                                    │                              │
+     │  POST /provision                   │                              │
+     │  { device_token, blueprint }       │                              │
+     ├───────────────────────────────────►│                              │
+     │                                    │  validates token             │
+     │                                    │  checks rate limits          │
+     │                                    │  creates site + resources    │
+     │                                    │  + targets via Pangolin key  │
+     │                                    ├─────────────────────────────►│
+     │                                    │◄─────────────────────────────┤
+     │  { newt_id, newt_secret,           │                              │
+     │    subdomains, config }            │                              │
+     │◄───────────────────────────────────┤                              │
+     │                                    │                              │
+     │  connects Newt with credentials    │                              │
+     ├──────────────────────────────────────────────────────────────────►│
+```
 
-Current test site: "nick" (siteId 14913). Blueprint auto-creates resources on first connect.
+**Why not direct Pangolin API key on the stick:**
+- If the stick is compromised (USB pulled, filesystem read), attacker gets the Pangolin org key
+- Pangolin API keys are well-scoped (action-based RBAC with `verifyApiKeyHasAction`) but an org key with `createSite`+`createResource`+`createTarget`+`updateTarget` could still create rogue tunnels, modify resources, or enumerate all org users/sites
+- Provisioning keys (single-use, auto-expire) would be ideal but require tier3 ($100/mo) — not worth it
+
+**Why the middleman wins:**
+- **Pangolin key never on-device** — filesystem compromise yields only a device token, useless for reconfiguring the org
+- **Minimal surface area** — stick can only call `/provision`, not "delete all resources" or "create admin users"
+- **Device tokens are revocable** — kill a stolen stick's access without rotating Pangolin keys
+- **Business logic server-side** — one site per stick, subdomain allowlisting, usage tracking, rate limiting
+- **Audit trail** — every provision request logged centrally
+
+**Where it runs:** Our infrastructure (main server, cheap VPS, or Cloudflare Worker). Doesn't need much — tiny API proxying to Pangolin.
+
+**Pangolin API key scope (on the middleman):** Minimally-scoped org key with only `createSite`, `createResource`, `createTarget`, `listSites`, `listResources`, `updateTarget`. Nothing else.
+
+### Tunneling: Pangolin Self-Hosted (VPS)
+
+Self-hosted Pangolin EE on NL VPS (89.125.209.77, RoyaleHosting BV). Each device = 1 Pangolin site with N resources.
+
+**Pattern (production):** `{service}.{device}.serverstick.com` (e.g. `pdf.nick.serverstick.com`)
+**Pattern (hackathon):** `{service}.serverstick.com` (flat, single device — `*.serverstick.com` wildcard)
 
 || Service | Subdomain | Port ||
 ||---------|-----------|------||
@@ -222,9 +323,16 @@ Current test site: "nick" (siteId 14913). Blueprint auto-creates resources on fi
 || API | api.{device} | 8080 ||
 || Watchtower | (headless) | — ||
 
-**Tunnel client:** Newt runs as `serverstick-newt.service`. Connects to `gerbil.pangolin.net:50120`. All resources route to `127.0.0.1:PORT` via Newt.
+**Tunnel client:** Newt runs as `serverstick-newt.service`. Connects to self-hosted Pangolin at `pangolin.serverstick.com`. All resources route to `127.0.0.1:PORT` via Newt.
 
-**Provisioning flow:** Bootstrap writes `SERVERSTICK_STARTER_KEY` env var. Pi Agent `/api/setup` calls cloud API → cloud creates Pangolin site + blueprint → returns Newt credentials → device connects. If credentials omitted, device operates LAN-only.
+**Provisioning flow:** Bootstrap writes `SERVERSTICK_STARTER_KEY` env var. Pi Agent `/api/setup` calls middleman API → middleman calls Pangolin Integration API (port 3003) → returns Newt credentials → device connects. If credentials omitted, device operates LAN-only.
+
+**VPS details:**
+- Pangolin 1.19.2, Traefik 3.x with badger plugin, Gerbil, SQLite
+- Docker stack: pangolin + gerbil + traefik
+- Integration API on :3003 (requires `flags.enable_integration_api: true`)
+- Domain: `*.serverstick.com` → VPS IP (Porkbun DNS)
+- Dashboard: `pangolin.serverstick.com`
 
 ### Matrix (Synapse) — Communication Hub
 
@@ -327,10 +435,62 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - **VM 101 test environment** — Proxmox VMID 101 @ 10.0.0.19, Debian 12, 8GB RAM, Docker 29.5.2, Pi Agent running on :8080
 - **Competitive research** — Harbor (steal patterns, don't adopt), EverOS (skip), claude-homelab (SKILL.md format reference)
 
+### ✅ Hackathon: Pangolin Self-Hosted Routing (2026-06-14)
+
+**Pangolin EE self-hosted on NL VPS (89.125.209.77):**
+- Pangolin 1.19.2 running via Docker on Fedora 42 VPS (RoyaleHosting BV, Amsterdam)
+- Domain: `*.serverstick.com` → 89.125.209.77 (Porkbun wildcard DNS)
+- Dashboard: `pangolin.serverstick.com`
+- Org: `serverstick`, admin: `[REDACTED]`
+- Integration API enabled on port 3003 (`flags.enable_integration_api: true` in config.yml, port 3003 exposed in docker-compose)
+- API key: org-scoped, actions: createSite, createResource, createTarget, listSites, listResources, updateTarget, etc.
+- No license key needed for basic HTTP routing (EE gate is for SSO/access rules only)
+
+**9 resources created and routing (all public, no auth wall):**
+
+| Resource | Subdomain | Target | Status |
+|----------|-----------|--------|--------|
+| demo | `demo.serverstick.com` | TBD | ⬜ (user-created, no target yet) |
+| homepage | `home.serverstick.com` | mybox:3002 | ⚠️ 502 (Homepage resets connection on wrong Host header) |
+| uptime | `uptime.serverstick.com` | mybox:3001 | ✅ 302→/dashboard |
+| pdf | `pdf.serverstick.com` | mybox:8440 | ✅ 401 (Stirling-PDF login) |
+| bin | `bin.serverstick.com` | mybox:8084 | ✅ 200 |
+| drop | `drop.serverstick.com` | mybox:3000 | ✅ 200 |
+| rembg | `rembg.serverstick.com` | mybox:7000 | ✅ 200 |
+| dozzle | `dozzle.serverstick.com` | mybox:8888 | ✅ 405 (needs GET path) |
+| discovery | `api.serverstick.com` | mybox:8080 | ✅ HTML |
+
+**Newt tunnel on VM 101:**
+- Newt 1.12.5 at `/usr/local/bin/newt`, config at `/etc/newt/newt.json`
+- systemd: `serverstick-newt.service` with `--config-file` flag
+- Connected to self-hosted Pangolin (endpoint: `https://pangolin.serverstick.com`)
+- Site: "mybox" (ID `btz7ips0bnyq5dq`)
+
+**Pangolin API patterns (Integration API on :3003):**
+- `GET /v1/org/{orgId}/domains` — list domains (domainId: `domain1`)
+- `PUT /v1/org/{orgId}/resource` — create resource (requires `mode: "http"`, `name`, `subdomain`, `domainId`)
+- `PUT /v1/resource/{resourceId}/target` — set target (`siteId`, `ip`, `port`, `method: "http"`)
+- `GET /v1/org/{orgId}/resources` — list all resources
+- Auth: `Authorization: Bearer {apiKeyId}.{apiKeySecret}`
+
+**Gotchas discovered:**
+1. `"id"` not `"newtId"` in `/etc/newt/newt.json` — the #1 newt config gotcha
+2. `--config-file` not `--config` in newt CLI (latter is deprecated)
+3. Integration API requires `flags.enable_integration_api: true` in Pangolin config AND port 3003 exposed
+4. Integration API is separate Express server from Dashboard API (port 3000 vs 3003)
+5. Resource creation requires `mode` field (`"http"`, `"ssh"`, `"rdp"`, `"vnc"`, `"tcp"`, `"udp"`)
+6. Resources default to "Protected" (SSO auth wall) — set `sso=0` in `resourcePolicies` table to make public
+7. DB location: `/opt/pangolin/config/db/db.sqlite` (not `/opt/pangolin/config/db.sqlite` which is 0 bytes)
+8. `resourcePolicies.sso = 0` = public (no auth wall). DB update requires Pangolin restart to take effect.
+
 ### ⬜ In Progress / Next
 
+- **Hackathon demo: `curl | bash` one-command install** — Bootstrap script at `src/bootstrap/bootstrap.sh` v0.4.0. Installs: Docker, Newt, Pi Agent (FastAPI + Svelte), opens browser to onboarding. NOT YET TESTED on clean machine.
+- Bootstrap script served from VPS at `http://89.125.209.77:9095/install.sh` (nginx container `serverstick-get`)
+- Cloud `/v1/provision` — real Pangolin API calls via Integration API (API key + patterns now verified)
+- `demo.serverstick.com` exists as Pangolin resource (ID 9) but has no target yet
+- `get.serverstick.com` exists as Pangolin resource (ID 18) but cannot route through Newt (get server is on VPS, not tunnel site) — needs Traefik static route or move to tunnel site
 - VM end-to-end test — verify bootstrap → Pi Agent → tunnel → services flow
-- Cloud `/v1/provision` — real Pangolin Blueprint + Provisioning Key API calls
 - SOPS/age key generation flow testing
 - ISO packaging — xorriso repack + preseed injection
 - Additional skill YAML catalog entries (only rembg exists; need homepage, stirling-pdf, privatebin, pairdrop, uptime-kuma, dozzle, synapse, element)
@@ -371,6 +531,8 @@ Both via TokenRouter. Use DeepSeek by default; escalate to GLM when it matters.
 - **PI Imager fork** — Web wizard handles all user interaction. No native app.
 - **Single API key** — Two-key system (starter + earnings) is the right model.
 - **Roll-your-own WireGuard + Caddy** — Pangolin IS WireGuard with a management layer. Don't reimplement.
+- **Direct Pangolin API key on the stick** — If the stick is compromised, attacker gets org-level API access. Middleman proxy keeps the key server-side; sticks only hold a device token.
+- **Pangolin provisioning keys** — Ideal UX (single-use, auto-expire) but gated behind tier3 on Pangolin Cloud ($100/mo). Self-hosted EE has them but we haven't validated yet; middleman achieves the same security goal regardless.
 - **AdGuard Home / Pi-hole in v1** — DNS blocking requires router config. Single point of failure for all DNS.
 - **Vaultwarden** — Backup failure = catastrophic data loss. Consequences out of proportion.
 - **Jellyfin + *arr stack** — Productizing piracy is legal liability.

@@ -51,8 +51,9 @@ for _d in [SS_DIR, SS_DATA, BACKUP_DIR]:
         pass  # Running non-root; dirs will be created by bootstrap on target
 
 PORT = int(os.environ.get("SERVERSTICK_PORT", "8080"))
-CLOUD_URL = os.environ.get("SERVERSTICK_CLOUD_URL", "https://serverstick.vercel.app/api/v1/provision")
+CLOUD_URL = os.environ.get("SERVERSTICK_CLOUD_URL", "http://localhost:9090/v1/provision")
 STARTER_KEY = os.environ.get("SERVERSTICK_STARTER_KEY", "")
+DEVICE_TOKEN = os.environ.get("SERVERSTICK_DEVICE_TOKEN", "ss_dev_token_change_me")
 
 
 def _docker_available() -> bool:
@@ -642,10 +643,12 @@ async def setup_device(req: SetupRequest):
             resp = await client.post(
                 CLOUD_URL,
                 json={
-                    "device_id": DEVICE_ID or name,
                     "device_name": name,
                     "starter_key": starter_key,
-                    "services": req.services,
+                    "services": req.services or [],
+                },
+                headers={
+                    "Authorization": f"Bearer {DEVICE_TOKEN}",
                 },
                 timeout=30,
             )
@@ -690,7 +693,11 @@ async def setup_device(req: SetupRequest):
     if tunnel_error:
         response["tunnel_warning"] = f"Provisioned locally, but tunnel setup failed: {tunnel_error}"
     elif newt_id:
-        response["tunnel"] = {"newt_id": newt_id, "endpoint": f"*.{device_name}.serverstick.com"}
+        response["tunnel"] = {
+            "newt_id": newt_id,
+            "endpoint": f"*.{device_name}.serverstick.com",
+            "tunnel_endpoint": provisioning_data.get("tunnel_endpoint", "gerbil.pangolin.net:50120"),
+        }
 
     return response
 
@@ -944,9 +951,9 @@ def _write_newt_config(newt_id: str, newt_secret: str):
         return  # Will be configured on target device (runs as root)
 
     newt_conf = {
-        "newtId": newt_id,
+        "id": newt_id,
         "secret": newt_secret,
-        "endpoint": "gerbil.pangolin.net:50120",
+        "endpoint": "https://app.pangolin.net",
     }
     (NEWT_CONF_DIR / "newt.json").write_text(json.dumps(newt_conf, indent=2))
     try:
@@ -959,7 +966,7 @@ def _write_newt_config(newt_id: str, newt_secret: str):
         env_file.write_text(
             f"NEWT_ID={newt_id}\n"
             f"NEWT_SECRET=***\n"
-            f"NEWT_ENDPOINT=gerbil.pangolin.net:50120\n"
+            f"NEWT_ENDPOINT=https://app.pangolin.net\n"
         )
         os.chmod(env_file, 0o600)
     except (PermissionError, OSError):
@@ -967,10 +974,29 @@ def _write_newt_config(newt_id: str, newt_secret: str):
 
 
 def _enable_newt_service():
-    """Enable and start the Newt tunnel service."""
+    """Write systemd unit file (if missing), then enable and start the Newt tunnel service."""
+    unit_path = Path("/etc/systemd/system/serverstick-newt.service")
+    if not unit_path.exists():
+        unit_content = (
+            "[Unit]\n"
+            "Description=ServerStick Pangolin Tunnel (Newt)\n"
+            "After=network-online.target\n"
+            "Wants=network-online.target\n\n"
+            "[Service]\n"
+            "ExecStart=/usr/local/bin/newt --config-file /etc/newt/newt.json\n"
+            "Restart=always\n"
+            "RestartSec=5\n\n"
+            "[Install]\n"
+            "WantedBy=multi-user.target\n"
+        )
+        try:
+            unit_path.write_text(unit_content)
+            subprocess.run(["systemctl", "daemon-reload"], capture_output=True, timeout=10)
+        except (PermissionError, OSError):
+            pass  # Not running as root
     try:
         subprocess.run(["systemctl", "enable", "serverstick-newt"], capture_output=True, timeout=10)
-        subprocess.run(["systemctl", "start", "serverstick-newt"], capture_output=True, timeout=10)
+        subprocess.run(["systemctl", "restart", "serverstick-newt"], capture_output=True, timeout=10)
     except Exception:
         pass
 

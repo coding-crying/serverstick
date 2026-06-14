@@ -71,6 +71,7 @@ services:
     restart: unless-stopped
     ports:
       - "7000:7000"
+    command: s
     labels:
       - "com.serverstick.service=rembg"
 
@@ -92,10 +93,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      - DOCKER_API_VERSION=1.40
       - WATCHTOWER_LABEL_ENABLE=true
       - WATCHTOWER_CLEANUP=true
       - WATCHTOWER_SCHEDULE=0 0 4 * * *
-      - WATCHTOWER_NOTIFICATIONS=email
     labels:
       - "com.serverstick.service=watchtower"
 
