@@ -265,12 +265,27 @@ mkdir -p "${SS_DATA}"/{homepage,stirling-pdf/trainingData,stirling-pdf/extraConf
 mkdir -p "${SS_DIR}/services"
 
 # Agent env file
+# NOTE: SERVERSTICK_PANGOLIN_API_KEY is the Org Integration API key for the
+# self-hosted Pangolin EE instance. This is hardcoded for the hackathon demo.
+# In production, this would be replaced by a middleman API (api.serverstick.com)
+# that uses per-device provisioning keys. See PLAN.md for the middleman design.
+#
+# SERVERSTICK_PANGOLIN_API_URL uses the VPS public IP (not pangolin.serverstick.com)
+# because port 3003 is only open directly on the VPS IP. Traefik on 443 doesn't
+# forward to the Integration API. The API URL is used for provisioning, the NEWT
+# endpoint is used by the Newt client (which goes through Traefik on 443).
 cat > "${SS_DIR}/agent.env" << EOF
 SERVERSTICK_DIR=${SS_DIR}
 SERVERSTICK_DATA=${SS_DATA}
 SERVERSTICK_PORT=${AGENT_PORT}
 SERVERSTICK_STARTER_KEY=${STARTER_KEY}
 SERVERSTICK_PANGOLIN_API=${PANGOLIN_API}
+SERVERSTICK_PANGOLIN_API_URL=http://89.125.209.77
+SERVERSTICK_PANGOLIN_INT_PORT=3003
+SERVERSTICK_PANGOLIN_API_KEY=r16t9qlyj6sc15g.pnza7wuexw7kymbyfv5yoiuyibo3zdpn4qwhz3xg
+SERVERSTICK_PANGOLIN_ORG_ID=serverstick
+SERVERSTICK_PANGOLIN_DOMAIN_ID=domain1
+SERVERSTICK_NEWT_ENDPOINT=https://pangolin.serverstick.com
 SERVERSTICK_DEVICE_ID=
 SERVERSTICK_PROVISIONED=false
 SERVERSTICK_HERMES_SANDBOX=${NEMOCLAW_SANDBOX}

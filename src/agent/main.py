@@ -55,6 +55,36 @@ CLOUD_URL = os.environ.get("SERVERSTICK_CLOUD_URL", "http://localhost:9090/v1/pr
 STARTER_KEY = os.environ.get("SERVERSTICK_STARTER_KEY", "")
 DEVICE_TOKEN = os.environ.get("SERVERSTICK_DEVICE_TOKEN", "ss_dev_token_change_me")
 
+# Direct Pangolin fallback (when no middleman is available)
+# Hardcoded for hackathon demo — would come from secure config in production
+# IMPORTANT: PANGOLIN_API_URL must point at the host where Integration API is reachable.
+# Self-hosted Pangolin exposes Integration API on port 3003 internally.
+# We use the VPS public IP (not pangolin.serverstick.com) because port 3003 is only
+# open on the VPS IP, not via Traefik on 443.
+PANGOLIN_API_URL = os.environ.get(
+    "SERVERSTICK_PANGOLIN_API_URL",
+    "http://89.125.209.77",  # VPS public IP — port 3003 is open directly
+)
+PANGOLIN_INTEGRATION_PORT = int(os.environ.get("SERVERSTICK_PANGOLIN_INT_PORT", "3003"))
+PANGOLIN_API_KEY = os.environ.get("SERVERSTICK_PANGOLIN_API_KEY", "")
+PANGOLIN_ORG_ID = os.environ.get("SERVERSTICK_PANGOLIN_ORG_ID", "serverstick")
+PANGOLIN_DOMAIN_ID = os.environ.get("SERVERSTICK_PANGOLIN_DOMAIN_ID", "domain1")
+# Newt endpoint is the public HTTPS URL (used by the Newt client, not the API)
+NEWT_ENDPOINT = os.environ.get("SERVERSTICK_NEWT_ENDPOINT", "https://pangolin.serverstick.com")
+
+# Default service catalog: subdomain -> local port
+# Hardcoded for hackathon; v2 reads from recipe catalog dynamically
+DEFAULT_SERVICE_PORTS = {
+    "homepage": 3002,
+    "stirling-pdf": 8440,
+    "privatebin": 8084,
+    "pairdrop": 3000,
+    "uptime-kuma": 3001,
+    "rembg": 7000,
+    "dozzle": 8888,
+    "api": 8080,
+}
+
 
 def _docker_available() -> bool:
     """Check if Docker daemon is accessible."""
@@ -595,7 +625,143 @@ async def get_network():
     return network
 
 
-# ─── Setup & Provisioning ─────────────────────────────────────────────
+# ─── Direct Pangolin Provisioning (fallback when no middleman) ──────
+
+async def _pangolin_create_site(client: httpx.AsyncClient, subdomain: str) -> dict:
+    """Create a Pangolin site (Newt tunnel endpoint) via Integration API.
+
+    Returns {siteId, niceId, newtId, newtSecret} or raises on failure.
+    """
+    # 1. Create the site
+    resp = await client.put(
+        f"{PANGOLIN_API_URL}:{PANGOLIN_INTEGRATION_PORT}/v1/org/{PANGOLIN_ORG_ID}/site",
+        json={
+            "name": subdomain,
+            "type": "newt",
+        },
+        headers={"Authorization": f"Bearer {PANGOLIN_API_KEY}"},
+        timeout=15,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Create site failed: {resp.status_code} {resp.text[:200]}")
+    site_data = resp.json().get("data", {})
+
+    # Response shape varies — try common fields
+    site_id = site_data.get("siteId") or site_data.get("site", {}).get("siteId")
+    newt_id = site_data.get("newtId") or site_data.get("site", {}).get("newtId")
+    newt_secret = site_data.get("secret") or site_data.get("site", {}).get("secret")
+
+    if not all([site_id, newt_id, newt_secret]):
+        # Some Pangolin versions return this in a different shape
+        raise RuntimeError(f"Site created but missing creds: {json.dumps(site_data)[:300]}")
+
+    return {
+        "siteId": site_id,
+        "newtId": newt_id,
+        "newtSecret": newt_secret,
+    }
+
+
+async def _pangolin_create_resource(
+    client: httpx.AsyncClient, name: str, subdomain: str, site_id: int, port: int
+) -> dict:
+    """Create a Pangolin resource + target for a single service."""
+    # 1. Create resource
+    resp = await client.put(
+        f"{PANGOLIN_API_URL}:{PANGOLIN_INTEGRATION_PORT}/v1/org/{PANGOLIN_ORG_ID}/resource",
+        json={
+            "name": name,
+            "subdomain": subdomain,
+            "domainId": PANGOLIN_DOMAIN_ID,
+            "mode": "http",
+        },
+        headers={"Authorization": f"Bearer {PANGOLIN_API_KEY}"},
+        timeout=15,
+    )
+    if resp.status_code not in (200, 201):
+        raise RuntimeError(f"Create resource {name} failed: {resp.status_code} {resp.text[:200]}")
+    resource_id = resp.json().get("data", {}).get("resourceId")
+    if not resource_id:
+        raise RuntimeError(f"No resourceId returned: {resp.text[:200]}")
+
+    # 2. Create target pointing at this site + local port
+    target_resp = await client.put(
+        f"{PANGOLIN_API_URL}:{PANGOLIN_INTEGRATION_PORT}/v1/resource/{resource_id}/target",
+        json={
+            "siteId": site_id,
+            "ip": "127.0.0.1",
+            "port": port,
+            "mode": "http",
+        },
+        headers={"Authorization": f"Bearer {PANGOLIN_API_KEY}"},
+        timeout=15,
+    )
+    if target_resp.status_code not in (200, 201):
+        raise RuntimeError(f"Create target {name} failed: {target_resp.status_code} {target_resp.text[:200]}")
+
+    return {"resourceId": resource_id, "subdomain": subdomain}
+
+
+async def _pangolin_make_public_via_db(orphaned_resources: list[int]) -> None:
+    """Direct DB write to set sso=0 on resources. Requires SSH access to Pangolin host.
+
+    Skipped silently if SSH not configured. Resources default to Protected otherwise.
+    """
+    if not orphaned_resources:
+        return
+    # We don't have direct DB access from Pi Agent. Log and rely on the user
+    # to either configure a provisioning key that returns 'public' resources
+    # or run the DB write command from the Pangolin host.
+    log_msg = f"Resources {orphaned_resources} created but default to Protected (sso=1). "
+    log_msg += "For hackathon demo, they should be made public via direct DB write on Pangolin host: "
+    log_msg += f"sqlite3 /opt/pangolin/config/db/db.sqlite \"UPDATE resources SET sso=0 WHERE resourceId IN ({','.join(map(str, orphaned_resources))});\""
+    print(f"[setup] {log_msg}")
+
+
+async def _provision_via_pangolin_direct(subdomain: str, services: list[str]) -> dict:
+    """Bypass the middleman, talk to Pangolin Integration API directly.
+
+    This is the demo path — Pangolin org API key is hardcoded in env.
+    Production should use a middleman with per-device provisioning keys.
+    """
+    if not PANGOLIN_API_KEY:
+        raise RuntimeError(
+            "PANGOLIN_API_KEY not set. Set SERVERSTICK_PANGOLIN_API_KEY env var, "
+            "or implement a middleman and point CLOUD_URL at it."
+        )
+
+    async with httpx.AsyncClient() as client:
+        # 1. Create site (Newt tunnel endpoint for this device)
+        site = await _pangolin_create_site(client, subdomain)
+        site_id = site["siteId"]
+
+        # 2. Create resources for each selected service
+        created = []
+        for svc in services:
+            port = DEFAULT_SERVICE_PORTS.get(svc)
+            if not port:
+                print(f"[setup] Unknown service {svc}, skipping")
+                continue
+            try:
+                res = await _pangolin_create_resource(
+                    client, name=svc, subdomain=svc, site_id=site_id, port=port
+                )
+                created.append(res)
+            except Exception as e:
+                print(f"[setup] Failed to create resource for {svc}: {e}")
+
+        # 3. Hint about public-resource policy (sso=0 toggle)
+        await _pangolin_make_public_via_db([r["resourceId"] for r in created])
+
+    return {
+        "newt_id": site["newtId"],
+        "newt_secret": site["newtSecret"],
+        "site_id": site_id,
+        "resources": created,
+        "tunnel_endpoint": NEWT_ENDPOINT,
+        "method": "pangolin_direct",
+    }
+
 
 @app.post("/api/setup")
 async def setup_device(req: SetupRequest):
@@ -635,29 +801,46 @@ async def setup_device(req: SetupRequest):
         if key_file.exists():
             starter_key = key_file.read_text().strip()
 
-    # ── Step 1: Cloud provisioning ──
+    # ── Step 1: Cloud provisioning (try middleman first, fall back to direct) ──
     provisioning_data = {}
     tunnel_error = None
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                CLOUD_URL,
-                json={
-                    "device_name": name,
-                    "starter_key": starter_key,
-                    "services": req.services or [],
-                },
-                headers={
-                    "Authorization": f"Bearer {DEVICE_TOKEN}",
-                },
-                timeout=30,
+    used_method = None
+
+    if CLOUD_URL and CLOUD_URL != "http://localhost:9090/v1/provision":
+        # Real middleman configured — try it
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    CLOUD_URL,
+                    json={
+                        "device_name": name,
+                        "starter_key": starter_key,
+                        "services": req.services or [],
+                    },
+                    headers={"Authorization": f"Bearer {DEVICE_TOKEN}"},
+                    timeout=30,
+                )
+                if resp.status_code == 200:
+                    provisioning_data = resp.json()
+                    used_method = "middleman"
+                else:
+                    tunnel_error = f"Cloud API returned {resp.status_code}: {resp.text[:300]}"
+        except Exception as e:
+            tunnel_error = f"Middleman unreachable: {e}"
+
+    # Fallback: direct Pangolin API (hackathon demo path)
+    if not provisioning_data and PANGOLIN_API_KEY:
+        try:
+            provisioning_data = await _provision_via_pangolin_direct(
+                name, req.services or list(DEFAULT_SERVICE_PORTS.keys())
             )
-            if resp.status_code == 200:
-                provisioning_data = resp.json()
-            else:
-                tunnel_error = f"Cloud API returned {resp.status_code}: {resp.text[:300]}"
-    except Exception as e:
-        tunnel_error = str(e)
+            used_method = "pangolin_direct"
+            tunnel_error = None  # reset — direct path succeeded
+        except Exception as e:
+            tunnel_error = f"Direct Pangolin provision failed: {e}"
+
+    if not provisioning_data and not tunnel_error:
+        tunnel_error = "No provision path succeeded. Set CLOUD_URL or PANGOLIN_API_KEY."
 
     # ── Step 2: Write Newt tunnel config if we got credentials ──
     newt_id = provisioning_data.get("newt_id")
@@ -688,15 +871,18 @@ async def setup_device(req: SetupRequest):
         "device_name": device_name,
         "domain": f"dash.{device_name}.serverstick.com",
         "services": results,
+        "method": used_method,
     }
 
     if tunnel_error:
         response["tunnel_warning"] = f"Provisioned locally, but tunnel setup failed: {tunnel_error}"
     elif newt_id:
+        resources = provisioning_data.get("resources", [])
         response["tunnel"] = {
             "newt_id": newt_id,
             "endpoint": f"*.{device_name}.serverstick.com",
-            "tunnel_endpoint": provisioning_data.get("tunnel_endpoint", "gerbil.pangolin.net:50120"),
+            "tunnel_endpoint": provisioning_data.get("tunnel_endpoint", NEWT_ENDPOINT),
+            "subdomains": [r.get("subdomain") for r in resources] if resources else None,
         }
 
     return response
@@ -953,7 +1139,7 @@ def _write_newt_config(newt_id: str, newt_secret: str):
     newt_conf = {
         "id": newt_id,
         "secret": newt_secret,
-        "endpoint": "https://app.pangolin.net",
+        "endpoint": NEWT_ENDPOINT,
     }
     (NEWT_CONF_DIR / "newt.json").write_text(json.dumps(newt_conf, indent=2))
     try:
@@ -965,8 +1151,8 @@ def _write_newt_config(newt_id: str, newt_secret: str):
     try:
         env_file.write_text(
             f"NEWT_ID={newt_id}\n"
-            f"NEWT_SECRET=***\n"
-            f"NEWT_ENDPOINT=https://app.pangolin.net\n"
+            f"NEWT_SECRET={newt_secret}\n"
+            f"NEWT_ENDPOINT={NEWT_ENDPOINT}\n"
         )
         os.chmod(env_file, 0o600)
     except (PermissionError, OSError):
