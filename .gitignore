@@ -1,88 +1,39 @@
-# Secrets and credentials
-pangolin.env
-age.key
-keys.enc.yaml
-*.env
-*.env.*
-!.env.example
-!*.env.template
-*.key
-*.pem
-*.enc.yaml
-*secret*
-*password*
-*credentials*
+# OS
+.DS_Store
+Thumbs.db
 
-# IDE / editor
-.idea/
+# Editors
 .vscode/
+.idea/
 *.swp
 *.swo
-*~
-.project
-.settings/
-*.sublime-*
-
-# OS generated
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-desktop.ini
 
 # Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-*.egg
-.eggs/
-*.whl
-
-# Virtual environments
-venv/
+*.pyc
+*.pyo
 .venv/
-env/
-.env/
+.pytest_cache/
 
-# Node.js
+# Node
 node_modules/
 .npm
-.npmrc
-
-# SvelteKit
 .svelte-kit/
-
-# Build artifacts
 build/
-out/
-*.o
-*.a
-*.ko
-*.obj
-*.exe
-*.dll
-*.dylib
+dist/
 
-# ISO / disk images
-*.iso
-*.img
-*.raw
+# Secrets
+.env
+.env.local
+*.key
+*.pem
+starter-key
+hermes.token
+pangolin.env
 
 # Logs
 *.log
-logs/
 
-# Miscellaneous
-*.tmp
-*.bak
-*.orig
-*.rej
-.cache/
-coverage/
-.nyc_output/
+# OS junk
+.attach_pid*
+EOF
