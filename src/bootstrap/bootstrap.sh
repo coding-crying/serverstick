@@ -345,7 +345,7 @@ if [[ -d dashboard ]]; then
   cd ..
 fi
 
-# Write minimal env file (bridge reads this; Svelte wizard adds Pangolin/Hermes config later)
+# Write env file FIRST so systemd EnvironmentFile always finds it
 mkdir -p "${SS_DIR}"
 mkdir -p "${SS_DATA}"
 mkdir -p /etc/newt
@@ -375,10 +375,10 @@ else
 fi
 ok "Config written to ${SS_DIR}/agent.env"
 
-# Systemd services
+# Systemd services — quoted heredoc so systemd resolves ${SERVERSTICK_PORT} from EnvironmentFile
 
 # hermes-bridge service
-cat > /etc/systemd/system/serverstick-bridge.service << BRIDGEEOF
+cat > /etc/systemd/system/serverstick-bridge.service << 'EOF'
 [Unit]
 Description=ServerStick hermes-bridge
 After=network-online.target docker.service
@@ -387,14 +387,14 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/serverstick/agent.env
-ExecStart=/opt/serverstick/src/hermes-bridge/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${AGENT_PORT}
+ExecStart=/opt/serverstick/src/hermes-bridge/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${SERVERSTICK_PORT}
 WorkingDirectory=/opt/serverstick/src/hermes-bridge
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-BRIDGEEOF
+EOF
 
 # Newt service
 cat > /etc/systemd/system/serverstick-newt.service << 'NEWTEOF'
