@@ -1,7 +1,7 @@
 ---
 name: hermes-webui-connector
-description: Connect NemoClaw-wrapped Hermes to the ServerStick Svelte web UI. Binds Hermes' built-in dashboard (port 18789) to the Pi Agent bridge so the Svelte dashboard can talk to Hermes without a separate port.
-version: 1.0.0
+description: Connect NemoClaw-wrapped Hermes to the ServerStick Svelte web UI. The hermes-bridge already proxies Hermes chat — this skill verifies and fixes the connection.
+version: 2.0.0
 triggers:
   - "/connect-webui"
   - "link hermes to dashboard"
@@ -10,31 +10,48 @@ triggers:
 
 # Hermes Web UI Connector
 
-Bind NemoClaw/Hermes into the Pi Agent bridge so the Svelte dashboard can drive it.
+Verify that Hermes is reachable from the Svelte dashboard via the hermes-bridge.
 
 ## When to use
 - After Hermes is onboarded inside NemoClaw
-- User opens Svelte dashboard and clicks "Chat with Hermes"
-- Hermes dashboard port (18789) needs to be reachable from the dashboard
+- User opens dashboard and Hermes shows "offline"
+- Troubleshooting chat connectivity
 
 ## What it does
-1. Verify NemoClaw sandbox `serverstick` is running: `nemohermes serverstick status`
-2. Read Hermes API token from `/sandbox/.hermes/.env` (inside the sandbox) — needs `nemohermes serverstick exec cat /sandbox/.hermes/.env`
-3. Pi Agent adds reverse-proxy route: `GET /api/hermes/*` → `http://localhost:18789/*` with bearer auth
-4. Write Pi Agent config: `HERMES_API_URL=http://localhost:18789`, `HERMES_TOKEN=<bearer>`
-5. Test: `curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/hermes/health` returns Hermes health JSON
-6. Dashboard can now call `/api/hermes/chat` from the browser
+1. Check bridge is up: `curl -sf http://localhost:{SERVERSTICK_PORT}/api/status`
+2. Check NemoClaw/Hermes is running: `curl -sf http://localhost:8642/health`
+3. If Hermes is down: `nemohermes serverstick start` (or `nemoclaw serverstick start`)
+4. Verify bridge can proxy: `curl -sf http://localhost:{SERVERSTICK_PORT}/api/hermes/logs`
+5. Dashboard chats via WebSocket at `ws://localhost:{SERVERSTICK_PORT}/ws/chat` → bridge proxies to NemoClaw `:8642`
+
+## Architecture
+```
+Browser → Svelte Dashboard
+  → WS ws://localhost:18090/ws/chat
+    → hermes-bridge (FastAPI)
+      → NemoClaw API http://localhost:8642/v1/chat/completions
+        → Hermes agent (inside sandbox)
+```
+
+## Port mapping
+- Bridge (Svelte dashboard): `SERVERSTICK_PORT` (default 18090)
+- NemoClaw API (OpenAI-compatible): `8642`
+- NemoClaw dashboard: `18789`
 
 ## Gotchas
-- Hermes dashboard is on 18789 (TUI bundle) and OpenAI API on 8642 — bind both
-- The Hermes token rotates if `nemohermes credentials reset` is run
-- Inside NemoClaw, the sandbox can be reached from the host via `localhost` (NemoClaw forwards ports)
+- The bridge port is in `/etc/serverstick/agent.env` as `SERVERSTICK_PORT`
+- Inside NemoClaw, the sandbox forwards ports to the host
+- Hermes token is managed by NemoClaw, not the bridge
+- If `nemohermes` is not found, try `nemoclaw` — command name varies by install
 
-## Token extraction script
+## Quick fix commands
 ```bash
-NEMOCLAW_CMD="nemohermes"
-SANDBOX="serverstick"
-TOKEN=$($NEMOCLAW_CMD $SANDBOX exec cat /sandbox/.hermes/.env | grep HERMES_API_TOKEN | cut -d= -f2)
-echo "$TOKEN" > /etc/serverstick/hermes.token
-chmod 600 /etc/serverstick/hermes.token
+# Check everything
+curl -sf http://localhost:18090/api/status
+
+# Start Hermes if down
+nemohermes serverstick start
+
+# Restart bridge
+systemctl restart serverstick-bridge
 ```

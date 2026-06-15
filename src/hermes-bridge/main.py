@@ -519,15 +519,15 @@ async def get_hardware():
 
 # ─── Services ───────────────────────────────────────────────────────────────
 SERVICES_CATALOG = {
-    "hermes": {"name": "Hermes", "icon": "🤖", "description": "AI agent", "port": 18789, "subdomain": "hermes"},
-    "files": {"name": "Files", "icon": "📁", "description": "File browser", "port": 8080, "subdomain": "files"},
-    "homepage": {"name": "Homepage", "icon": "🏠", "description": "Server dashboard", "port": 3002, "subdomain": "home"},
-    "stirling": {"name": "Stirling PDF", "icon": "📑", "description": "PDF tools", "port": 8440, "subdomain": "pdf"},
-    "privatebin": {"name": "PrivateBin", "icon": "📋", "description": "Encrypted pastebin", "port": 8084, "subdomain": "bin"},
-    "pairdrop": {"name": "PairDrop", "icon": "📁", "description": "File sharing", "port": 3000, "subdomain": "drop"},
-    "uptime": {"name": "Uptime Kuma", "icon": "📈", "description": "Uptime monitor", "port": 3001, "subdomain": "kuma"},
-    "rembg": {"name": "rembg", "icon": "🖼️", "description": "Background removal", "port": 7000, "subdomain": "rembg"},
-    "dozzle": {"name": "Dozzle", "icon": "📜", "description": "Container logs", "port": 8888, "subdomain": "logs"},
+    "hermes": {"name": "Hermes", "icon": "🤖", "description": "AI agent", "port": 18789, "subdomain": "hermes", "container": None},
+    "filebrowser": {"name": "Files", "icon": "📁", "description": "File browser", "port": 8080, "subdomain": "files", "container": "filebrowser"},
+    "homepage": {"name": "Homepage", "icon": "🏠", "description": "Server dashboard", "port": 3002, "subdomain": "home", "container": "homepage"},
+    "stirling-pdf": {"name": "Stirling PDF", "icon": "📑", "description": "PDF tools", "port": 8440, "subdomain": "pdf", "container": "stirling-pdf"},
+    "privatebin": {"name": "PrivateBin", "icon": "📋", "description": "Encrypted pastebin", "port": 8084, "subdomain": "bin", "container": "privatebin"},
+    "pairdrop": {"name": "PairDrop", "icon": "📁", "description": "File sharing", "port": 3000, "subdomain": "drop", "container": "pairdrop"},
+    "uptime-kuma": {"name": "Uptime Kuma", "icon": "📈", "description": "Uptime monitor", "port": 3001, "subdomain": "kuma", "container": "uptime-kuma"},
+    "rembg": {"name": "rembg", "icon": "🖼️", "description": "Background removal", "port": 7000, "subdomain": "rembg", "container": "rembg"},
+    "dozzle": {"name": "Dozzle", "icon": "📜", "description": "Container logs", "port": 8888, "subdomain": "logs", "container": "dozzle"},
 }
 
 
@@ -537,7 +537,20 @@ async def list_services():
     device = (BRIDGE_DIR / "device_name").read_text().strip() if (BRIDGE_DIR / "device_name").exists() else "myserver"
     services = []
     for sid, meta in SERVICES_CATALOG.items():
-        status = _service_status(f"serverstick-{sid}")
+        container = meta.get("container")
+        if container:
+            status = _service_status(container)
+        elif sid == "hermes":
+            # Check NemoClaw/Hermes via API
+            status = "unknown"
+            try:
+                async with httpx.AsyncClient(timeout=2) as client:
+                    r = await client.get(f"{NEMOCLAW_API}/health")
+                    status = "running" if r.status_code == 200 else "stopped"
+            except Exception:
+                status = "stopped"
+        else:
+            status = "unknown"
         services.append({
             "id": sid,
             "name": meta["name"],
@@ -557,7 +570,10 @@ async def service_action(service_id: str, action: str):
         raise HTTPException(400, "action must be start|stop|restart")
     if service_id not in SERVICES_CATALOG:
         raise HTTPException(404, f"unknown service: {service_id}")
-    container = f"serverstick-{service_id}"
+    meta = SERVICES_CATALOG[service_id]
+    container = meta.get("container")
+    if not container:
+        raise HTTPException(400, f"service {service_id} has no docker container (managed externally)")
     rc, out, err = _run(["docker", action, container], timeout=30)
     if rc != 0:
         raise HTTPException(500, f"docker {action} failed: {err or out}")

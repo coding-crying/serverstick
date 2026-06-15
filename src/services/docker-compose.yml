@@ -2,6 +2,21 @@
 # Auto-managed by Pi Agent. Do not edit manually.
 
 services:
+  filebrowser:
+    image: filebrowser/filebrowser:latest
+    container_name: filebrowser
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - /var/lib/serverstick/data/filebrowser/database:/database
+      - /var/lib/serverstick/data/filebrowser/settings:/config
+      - /var/lib/serverstick/data:/srv
+    environment:
+      - FB_NOAUTH=true
+    labels:
+      - "com.serverstick.service=filebrowser"
+
   homepage:
     image: ghcr.io/gethomepage/homepage:latest
     container_name: homepage
