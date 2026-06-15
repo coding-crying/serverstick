@@ -679,6 +679,98 @@ async def provision_resource(req: ProvisionResourceRequest):
     return {"status": "ok", "subdomain": result["subdomain"], "resource_id": result["resource_id"]}
 
 
+class UpdateSubdomainRequest(BaseModel):
+    subdomain: str  # new sub-subdomain (e.g. "pdf" or "documents")
+
+
+@app.patch("/api/services/{service_id}/subdomain")
+async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest):
+    """Update a service's sub-subdomain. Deletes old Pangolin resource and creates new one."""
+    device = (BRIDGE_DIR / "device_name").read_text().strip() if (BRIDGE_DIR / "device_name").exists() else ""
+    if not device:
+        raise HTTPException(400, "No device name set — run subdomain onboarding first")
+
+    meta = SERVICES_CATALOG.get(service_id)
+    if not meta:
+        raise HTTPException(404, f"Unknown service: {service_id}")
+
+    new_sub = req.subdomain.strip().lower()
+    if not new_sub or not new_sub.replace("-", "").isalnum() or len(new_sub) > 30:
+        raise HTTPException(400, "subdomain must be alphanumeric/- up to 30 chars")
+
+    # Pangolin API setup
+    api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
+    if not api_key:
+        key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
+        try:
+            api_key = open(key_path).read().strip()
+        except FileNotFoundError:
+            pass
+    api_url = os.getenv("SERVERSTICK_PANGOLIN_API_URL", "").rstrip("/")
+    int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
+    org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
+    if not api_key or not api_url or not org_id:
+        raise HTTPException(500, "Pangolin API not configured")
+
+    auth_header = "Bearer " + api_key
+    base = f"{api_url}:{int_port}"
+
+    old_full_sub = f"{meta['subdomain']}.{device}"
+    new_full_sub = f"{new_sub}.{device}"
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        # Find site and old resource
+        r = await client.get(f"{base}/v1/org/{org_id}/site", headers={"Authorization": auth_header})
+        r.raise_for_status()
+        sites = r.json().get("data", [])
+        site_id = None
+        for s in sites:
+            if s.get("name") == device:
+                site_id = s.get("siteId")
+                break
+        if not site_id:
+            raise HTTPException(404, f"No Pangolin site found for device '{device}'")
+
+        # List resources to find the old one
+        r = await client.get(f"{base}/v1/org/{org_id}/resource", headers={"Authorization": auth_header})
+        r.raise_for_status()
+        resources = r.json().get("data", [])
+        old_resource_id = None
+        for res in resources:
+            if res.get("subdomain") == old_full_sub:
+                old_resource_id = res.get("resourceId")
+                break
+
+        # Delete old resource if found
+        if old_resource_id:
+            r = await client.delete(f"{base}/v1/resource/{old_resource_id}", headers={"Authorization": auth_header})
+            # Don't fail if delete doesn't work — just try to create the new one
+
+        # Create new resource
+        r = await client.put(
+            f"{base}/v1/org/{org_id}/resource",
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json={"name": new_sub, "subdomain": new_full_sub, "domainId": os.getenv("SERVERSTICK_PANGOLIN_DOMAIN_ID", "domain1"), "mode": "http"},
+        )
+        r.raise_for_status()
+        resource_id = r.json().get("data", {}).get("resourceId")
+        if not resource_id:
+            raise HTTPException(502, f"Pangolin resource create returned no resourceId: {r.text}")
+
+        # Wire it to the local port
+        r2 = await client.put(
+            f"{base}/v1/resource/{resource_id}/target",
+            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            json={"siteId": site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
+        )
+        r2.raise_for_status()
+
+    # Update catalog in memory so next GET /api/services reflects the new subdomain
+    meta["subdomain"] = new_sub
+
+    return {"status": "ok", "old_subdomain": old_full_sub, "new_subdomain": new_full_sub, "resource_id": resource_id}
+
+
 # ─── Hermes Activity & Credit ───────────────────────────────────────────────
 @app.get("/api/hermes/logs")
 async def hermes_logs():

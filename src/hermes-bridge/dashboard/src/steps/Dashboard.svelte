@@ -23,6 +23,9 @@
   let installingRecipe = $state(null);
   let installError = $state('');
   let backendOffline = $state(false);
+  let editingService = $state(null);  // service.id being edited
+  let editSubdomain = $state('');     // temp value while editing
+  let editSaving = $state(false);
 
   // ─── Derived ─────────────────────────────────────────────────────
   let filteredRecipes = $derived(
@@ -96,6 +99,32 @@
     if (status === 'running' || status === 'starting') return 'status-running';
     if (status === 'error' || status === 'stopping') return 'status-error';
     return 'status-stopped';
+  }
+
+  function startEditSubdomain(service) {
+    editingService = service.id;
+    editSubdomain = service.url.split('.')[0]; // extract sub-subdomain from "sub.device.serverstick.com"
+    editSaving = false;
+  }
+
+  function cancelEdit() {
+    editingService = null;
+    editSubdomain = '';
+  }
+
+  async function saveSubdomain(service) {
+    editSaving = true;
+    try {
+      const result = await api.updateServiceSubdomain(service.id, editSubdomain);
+      // Update the service in place
+      service.url = result.new_subdomain + '.serverstick.com';
+      editingService = null;
+      editSubdomain = '';
+    } catch (err) {
+      alert(`Failed to update subdomain: ${err.message}`);
+    } finally {
+      editSaving = false;
+    }
   }
 
   async function installRecipe(recipe) {
@@ -255,10 +284,31 @@
         <div class="service-grid">
           {#each services as service (service.id)}
             <div class="svc-tile {statusClass(service.status)}">
+              <button class="svc-settings" onclick={() => startEditSubdomain(service)} title="Edit subdomain">⚙️</button>
               <div class="svc-icon">{service.icon}</div>
               <div class="svc-info">
                 <span class="svc-name">{service.name}</span>
                 <span class="svc-desc">{service.description}</span>
+                {#if editingService === service.id}
+                  <div class="svc-subdomain-edit">
+                    <input
+                      type="text"
+                      bind:value={editSubdomain}
+                      class="subdomain-input"
+                      placeholder="subdomain"
+                      onkeydown={(e) => { if (e.key === 'Enter') saveSubdomain(service); if (e.key === 'Escape') cancelEdit(); }}
+                    />
+                    <span class="subdomain-suffix">.{service.url.split('.').slice(1).join('.')}</span>
+                    <div class="subdomain-actions">
+                      <button class="svc-btn" onclick={() => saveSubdomain(service)} disabled={editSaving || !editSubdomain.trim()}>
+                        {editSaving ? '…' : '✓'}
+                      </button>
+                      <button class="svc-btn secondary" onclick={cancelEdit}>✕</button>
+                    </div>
+                  </div>
+                {:else}
+                  <span class="svc-url">{service.url}</span>
+                {/if}
               </div>
               {#if service.source === 'github'}
                 <a href="https://github.com/{service.github}" target="_blank" rel="noreferrer" class="svc-gh" title="View on GitHub">{@html githubIcon}</a>
@@ -715,6 +765,78 @@
     font-size: 11px;
     color: var(--text-dim);
     margin-top: 3px;
+  }
+
+  .svc-url {
+    display: block;
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.6;
+    margin-top: 3px;
+    font-family: var(--mono);
+    word-break: break-all;
+  }
+
+  .svc-settings {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.15s, transform 0.2s;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 0;
+    z-index: 2;
+  }
+
+  .svc-tile:hover .svc-settings { opacity: 0.5; }
+  .svc-settings:hover { opacity: 1 !important; transform: rotate(45deg); }
+
+  .svc-subdomain-edit {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .subdomain-input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    color: var(--text-heading);
+    font-size: 11px;
+    font-family: var(--mono);
+    padding: 3px 6px;
+    text-align: center;
+  }
+
+  .subdomain-input:focus { outline: none; border-color: var(--accent-strong); }
+
+  .subdomain-suffix {
+    font-size: 9px;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    word-break: break-all;
+  }
+
+  .subdomain-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+  }
+
+  .subdomain-actions .svc-btn {
+    font-size: 10px;
+    padding: 2px 10px;
   }
 
   .svc-gh {

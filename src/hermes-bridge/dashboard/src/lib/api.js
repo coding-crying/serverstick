@@ -60,6 +60,18 @@ export const api = {
       body: JSON.stringify({ recipe, github }),
     }),
 
+  provisionService: (serviceId) =>
+    request('/api/services/provision', {
+      method: 'POST',
+      body: JSON.stringify({ service_id: serviceId }),
+    }),
+
+  updateServiceSubdomain: (serviceId, subdomain) =>
+    request(`/api/services/${serviceId}/subdomain`, {
+      method: 'PATCH',
+      body: JSON.stringify({ subdomain }),
+    }),
+
   // ─── Hermes ──────────────────────────────────────────────────────
   getHermesLogs: () =>
     request('/api/hermes/logs'),

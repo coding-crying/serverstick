@@ -1,63 +1,51 @@
 {
   "name": "serverstick-bundle",
-  "version": "1.0.0",
-  "description": "Custom skills and scripts that wrap Hermes for ServerStick — provisioning, tier switching, web UI bridge, and LLM-fit scanning.",
+  "version": "2.0.0",
+  "description": "Custom skills and scripts for ServerStick — Pangolin provisioning, service management, tier switching, and Hermes dashboard integration via hermes-bridge.",
   "skills": [
     {
       "id": "pangolin-provision",
       "path": "skills/pangolin-provision.md",
-      "triggers": ["/provision", "provision this device", "set up tunnel"],
-      "requires": ["SERVERSTICK_PROVISION_API", "SERVERSTICK_DEVICE_TOKEN"]
+      "triggers": ["/provision", "provision this device", "set up tunnel"]
     },
     {
       "id": "pangolin-resource",
       "path": "skills/pangolin-resource.md",
-      "triggers": ["/add-resource", "/remove-resource", "expose service", "add subdomain"],
-      "requires": ["/etc/serverstick/pangolin.json"]
+      "triggers": ["/add-resource", "/remove-resource", "expose service", "add subdomain"]
     },
     {
       "id": "llmfit-scan",
       "path": "skills/llmfit-scan.md",
-      "triggers": ["/llmfit", "what model can I run", "scan my hardware", "local AI"],
-      "requires": []
+      "triggers": ["/llmfit", "what model can I run", "scan my hardware", "local AI"]
     },
     {
       "id": "install-service",
       "path": "skills/install-service.md",
-      "triggers": ["/install", "install <service>", "add <service>"],
-      "requires": ["/etc/serverstick/recipes/"]
+      "triggers": ["/install", "install service", "add service"]
     },
     {
       "id": "hermes-webui-connector",
       "path": "skills/hermes-webui-connector.md",
-      "triggers": ["/connect-webui", "link hermes to dashboard", "web ui bridge"],
-      "requires": ["NemoClaw", "Pi Agent running"]
+      "triggers": ["/connect-webui", "link hermes to dashboard", "web ui bridge"]
     },
     {
       "id": "hermes-tier-switch",
       "path": "skills/hermes-tier-switch.md",
-      "triggers": ["/tier", "switch ai", "set ai tier"],
-      "requires": ["/etc/serverstick/tier.env"]
+      "triggers": ["/tier", "switch ai", "set ai tier"]
     }
   ],
   "scripts": [
     {
-      "id": "provision",
-      "path": "scripts/provision.sh",
-      "purpose": "Create Pangolin site, write Newt config, start tunnel",
-      "called_by": ["skill:pangolin-provision", "Pi Agent onboarding step 1"]
-    },
-    {
       "id": "apply-tier",
       "path": "scripts/apply-tier.sh",
       "purpose": "Apply AI tier (local/byo/managed) to running Hermes",
-      "called_by": ["skill:hermes-tier-switch", "Pi Agent onboarding step 3"]
+      "called_by": ["skill:hermes-tier-switch", "bridge /api/onboard/brain"]
     },
     {
       "id": "llmfit-scan",
       "path": "scripts/llmfit-scan.sh",
       "purpose": "Detect hardware and recommend LLM model",
-      "called_by": ["skill:llmfit-scan", "Pi Agent onboarding step 3 (local tier)"]
+      "called_by": ["skill:llmfit-scan", "bridge /api/hardware/scan"]
     }
   ],
   "config_templates": [
@@ -72,25 +60,25 @@
       "id": "nemoclaw.env",
       "path": "config/nemoclaw.env.template",
       "installed_to": "/etc/serverstick/nemoclaw.env",
-      "written_by": "Svelte GUI + Pi Agent after subdomain picked",
-      "read_by": "scripts/apply-tier.sh, nemohermes onboard"
+      "written_by": "scripts/apply-tier.sh",
+      "read_by": "nemohermes onboard"
     }
   ],
   "integration": {
+    "hermes_bridge": {
+      "port": "SERVERSTICK_PORT (default 18090, from /etc/serverstick/agent.env)",
+      "dashboard": "Svelte build served at /",
+      "api_prefix": "/api",
+      "chat_proxy": "WS /ws/chat → NemoClaw :8642"
+    },
     "nemoclaw": {
       "sandbox_name": "serverstick",
-      "install_via": "curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash (with NEMOCLAW_AGENT=hermes)",
       "onboard_command": "nemohermes onboard --non-interactive",
       "dashboard_port": 18789,
       "api_port": 8642
     },
-    "svelte_webui": {
-      "connects_to_hermes_via": "Pi Agent bridge at /api/hermes/*",
-      "pi_agent_port": 8080,
-      "xterm_websocket": "/ws/terminal"
-    },
     "pangolin": {
-      "provisioning_api": "https://api.serverstick.com",
+      "api_url": "http://89.125.209.77:3003",
       "tunnel_endpoint": "https://pangolin.serverstick.com",
       "newt_config": "/etc/newt/newt.json"
     }

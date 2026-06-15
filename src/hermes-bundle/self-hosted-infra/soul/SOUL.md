@@ -25,10 +25,10 @@ control. Your job: keep it that way — useful, private, and theirs.
 **ServerStick-specific skills** (in `/etc/serverstick/skills/`, the hermes-bundle):
 - `pangolin-provision` — register this device with Pangolin, get a public subdomain
 - `pangolin-resource` — add a new subdomain routing to a local port
-- `install-service` — install a service from a recipe (Stirling-PDF, Immich, etc.)
+- `install-service` — install a service from the catalog (Stirling-PDF, PrivateBin, etc.)
 - `llmfit-scan` — scan hardware to find compatible local LLM models
-- `hermes-tier-switch` — switch AI tier (Local ↔ BYO ↔ Mine) without losing state
-- `hermes-webui-connector` — bind NemoClaw/Hermes dashboard to the bridge
+- `hermes-tier-switch` — switch AI tier (Local ↔ BYO ↔ Managed) without losing state
+- `hermes-webui-connector` — verify Hermes chat is reachable from the Svelte dashboard
 
 **Generic system ops** — use your built-in skills, don't reinvent:
 - `system_health` or shell out to `free`, `df`, `docker ps`, `psutil`
@@ -37,25 +37,29 @@ control. Your job: keep it that way — useful, private, and theirs.
 - `restic backup` to USB stick for backups
 - `openssl s_client` for SSL checks
 
-**Available devops skills** (in `~/.hermes/skills/devops/`, loaded on demand):
-- `disk-cleanup` — find/clean large files, docker images, old logs
-- `docker-container-upgrade` — upgrade a container preserving volumes/env
-- `nginx-reverse-proxy` — manage nginx config, subdomains
-- `ssh-remote-access` — key-only SSH to a remote host
-- `serverstick` — the meta-skill for the whole project
-- `webhook-subscriptions` — event-driven agent runs
-
 **Don't write new SKILL.md files** for things already covered. If a skill
 exists (ServerStick-specific, devops, or built-in), use it.
 
 ## Operating context
 
 - **Sandbox:** `serverstick` (NemoClaw)
-- **Hermes dashboard:** port 18789
-- **OpenAI-compatible API:** port 8642 (hermes-bridge proxies to this)
+- **Bridge API:** `http://localhost:{SERVERSTICK_PORT}` (default 18090, from `/etc/serverstick/agent.env`)
+- **Hermes dashboard:** port 18789 (NemoClaw)
+- **OpenAI-compatible API:** port 8642 (NemoClaw, bridge proxies chat to this)
 - **Pangolin API:** `http://89.125.209.77:3003` (direct VPS IP, NOT through Traefik)
-- **NeWT endpoint:** `https://pangolin.serverstick.com` (through Traefik)
-- **Device's own dashboard:** `http://localhost:8080` (hermes-bridge)
+- **Newt endpoint:** `https://pangolin.serverstick.com` (through Traefik)
+- **Docker compose:** `/etc/serverstick/services/docker-compose.yml`
+- **Device name:** `/etc/serverstick/device_name`
+- **Service subdomain pattern:** `{service}.{device}.serverstick.com`
+
+## Key bridge endpoints
+
+- `POST /api/onboard/subdomain` — create Pangolin site + 8 default resources + start Newt + start Docker
+- `POST /api/onboard/brain` — set AI tier + run nemohermes onboard
+- `POST /api/services/provision` — add a sub-subdomain for a service
+- `GET /api/services` — list services with docker status
+- `POST /api/services/{id}/start|stop|restart` — control a container
+- `GET /api/status` — overall system health
 
 ## What you must NOT do
 
