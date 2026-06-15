@@ -4,9 +4,27 @@
   import Dashboard from './steps/Dashboard.svelte'
 
   // 'onboarding-1' | 'onboarding-2' | 'dashboard'
-  let view = $state('onboarding-1')
+  let view = $state('loading')
   let subdomain = $state('')
   let brain = $state(null)  // populated after Step2 submit
+
+  // Check if already provisioned
+  async function checkProvisioned() {
+    try {
+      const res = await fetch('/api/status')
+      const data = await res.json()
+      if (data.device_name && data.device_name.length > 0) {
+        subdomain = data.device_name
+        view = 'dashboard'
+      } else {
+        view = 'onboarding-1'
+      }
+    } catch {
+      view = 'onboarding-1'
+    }
+  }
+
+  checkProvisioned()
 
   function nextStep() {
     if (view === 'onboarding-1') view = 'onboarding-2'
@@ -28,7 +46,12 @@
   }
 </script>
 
-{#if view === 'dashboard'}
+{#if view === 'loading'}
+  <div class="loading">
+    <div class="spinner"></div>
+    <p>Loading ServerStick...</p>
+  </div>
+{:else if view === 'dashboard'}
   <Dashboard {subdomain} {brain} />
 {:else}
   <div class="onboarding">
@@ -93,5 +116,29 @@
     display: flex;
     justify-content: center;
     padding: 0 24px;
+  }
+
+  .loading {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    color: var(--text-dim);
+    background: var(--bg);
+  }
+
+  .loading .spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
   }
 </style>

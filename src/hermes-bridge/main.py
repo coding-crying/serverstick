@@ -60,6 +60,7 @@ NEMOCLAW_ENV = Path("/sandbox/.hermes/.env")  # inside NemoClaw sandbox
 NEWT_CONFIG = Path("/etc/newt/newt.json")
 HERMES_ACTIVITY_LOG = Path("/var/log/serverstick/hermes.log")
 JOB_LOG_DIR = Path("/var/log/serverstick/jobs")
+LOCAL_RESOURCES = BRIDGE_DIR / "resources.json"  # cache of provisioned Pangolin resources
 
 # ─── Service URLs (defaults; can be overridden by env) ─────────────────────
 NEMOCLAW_API = os.getenv("NEMOCLAW_API", "http://localhost:8642")
@@ -78,6 +79,23 @@ app.add_middleware(
 
 # In-memory job tracking (single-process, fine for a self-hosted bridge)
 jobs: dict[str, dict] = {}
+
+
+def _load_resources() -> dict:
+    """Load local resource cache (Pangolin doesn't have a GET list endpoint)."""
+    if LOCAL_RESOURCES.exists():
+        try:
+            return json.loads(LOCAL_RESOURCES.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_resources(data: dict) -> None:
+    """Save local resource cache."""
+    LOCAL_RESOURCES.parent.mkdir(parents=True, exist_ok=True)
+    LOCAL_RESOURCES.write_text(json.dumps(data, indent=2))
+    LOCAL_RESOURCES.chmod(0o600)
 
 
 # ─── Models ─────────────────────────────────────────────────────────────────
@@ -292,6 +310,11 @@ async def _pangolin_create_resource(subdomain: str, svc_subdomain: str, port: in
         # Note: sso=0 (public access) is not set here. It requires either a PATCH
         # endpoint we haven't verified exists, or a direct SQL update on the Pangolin
         # VPS. For now, resources are SSO-gated by default. See PLAN.md "Public resources".
+
+        # Record in local cache for future lookups (Pangolin has no GET list endpoint)
+        resources = _load_resources()
+        resources[full_sub] = {"resource_id": resource_id, "target_id": target_id, "port": port, "site_id": site_id}
+        _save_resources(resources)
 
         return {"resource_id": resource_id, "target_id": target_id, "subdomain": full_sub}
 
@@ -718,33 +741,30 @@ async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest)
     old_full_sub = f"{meta['subdomain']}.{device}"
     new_full_sub = f"{new_sub}.{device}"
 
+    # Look up old resource from local cache (Pangolin has no GET list endpoint)
+    resources = _load_resources()
+    old_resource = resources.get(old_full_sub)
+    old_site_id = old_resource.get("site_id") if old_resource else None
+
+    # If we don't have the site_id cached, find it from the site list (PUT returns existing)
+    if not old_site_id:
+        # Create-or-get site (PUT is idempotent for existing sites)
+        try:
+            site = await _pangolin_create_site(device)
+            old_site_id = site["site_id"]
+        except Exception:
+            raise HTTPException(500, "Could not find or create Pangolin site for this device")
+
     async with httpx.AsyncClient(timeout=30) as client:
-        # Find site and old resource
-        r = await client.get(f"{base}/v1/org/{org_id}/site", headers={"Authorization": auth_header})
-        r.raise_for_status()
-        sites = r.json().get("data", [])
-        site_id = None
-        for s in sites:
-            if s.get("name") == device:
-                site_id = s.get("siteId")
-                break
-        if not site_id:
-            raise HTTPException(404, f"No Pangolin site found for device '{device}'")
-
-        # List resources to find the old one
-        r = await client.get(f"{base}/v1/org/{org_id}/resource", headers={"Authorization": auth_header})
-        r.raise_for_status()
-        resources = r.json().get("data", [])
-        old_resource_id = None
-        for res in resources:
-            if res.get("subdomain") == old_full_sub:
-                old_resource_id = res.get("resourceId")
-                break
-
-        # Delete old resource if found
-        if old_resource_id:
-            r = await client.delete(f"{base}/v1/resource/{old_resource_id}", headers={"Authorization": auth_header})
-            # Don't fail if delete doesn't work — just try to create the new one
+        # Delete old resource if we have its ID
+        if old_resource and old_resource.get("resource_id"):
+            try:
+                await client.delete(
+                    f"{base}/v1/resource/{old_resource['resource_id']}",
+                    headers={"Authorization": auth_header},
+                )
+            except Exception:
+                pass  # Best effort — old resource might already be gone
 
         # Create new resource
         r = await client.put(
@@ -761,9 +781,15 @@ async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest)
         r2 = await client.put(
             f"{base}/v1/resource/{resource_id}/target",
             headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"siteId": site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
+            json={"siteId": old_site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
         )
         r2.raise_for_status()
+
+    # Update local cache: remove old, add new
+    if old_full_sub in resources:
+        del resources[old_full_sub]
+    resources[new_full_sub] = {"resource_id": resource_id, "port": meta["port"], "site_id": old_site_id}
+    _save_resources(resources)
 
     # Update catalog in memory so next GET /api/services reflects the new subdomain
     meta["subdomain"] = new_sub
@@ -864,9 +890,21 @@ async def ws_chat(websocket: WebSocket):
                         },
                     ) as r:
                         r.raise_for_status()
-                        async for chunk in r.aiter_text():
-                            if chunk:
-                                await websocket.send_text(chunk)
+                        async for line in r.aiter_lines():
+                            if not line or not line.startswith("data: "):
+                                continue
+                            payload = line[6:]  # strip "data: "
+                            if payload.strip() == "[DONE]":
+                                await websocket.send_json({"done": True})
+                                break
+                            try:
+                                chunk = json.loads(payload)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    await websocket.send_json({"content": content})
+                            except json.JSONDecodeError:
+                                pass  # skip malformed chunks
             except httpx.ConnectError:
                 await websocket.send_json({"error": "offline", "msg": "Hermes is offline"})
             except Exception as e:

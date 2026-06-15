@@ -102,6 +102,12 @@ else
   error "Cannot detect OS"
 fi
 
+# Kill any stale service from a previous run BEFORE any step runs.
+# If a prior install left a broken service file, systemd has been
+# crash-looping it since boot. Stop + mask immediately.
+systemctl stop serverstick-bridge 2>/dev/null || true
+systemctl mask serverstick-bridge 2>/dev/null || true
+
 # ─── Step 1: System dependencies ─────────────────────────────────────
 step "Step 1/7: System dependencies"
 
@@ -245,28 +251,22 @@ step "Step 5/7: Newt tunnel client"
 
 if ! command -v newt &>/dev/null; then
   log "Installing Newt..."
-  ARCH=$(uname -m)
-  case "${ARCH}" in
-    x86_64)  NEWT_ARCH="amd64" ;;
-    aarch64) NEWT_ARCH="arm64" ;;
-    *)       NEWT_ARCH="amd64" ;;  # fallback
-  esac
-  curl -fsSL "https://github.com/pangolin-oracle/newt/releases/latest/download/newt-linux-${NEWT_ARCH}" \
-    -o /usr/local/bin/newt 2>/dev/null || {
-    warn "Newt download failed — tunnel will be configured during onboarding"
+  # Official Pangolin installer
+  curl -fsSL "https://static.pangolin.net/get-newt.sh" | bash 2>/dev/null || {
+    warn "Newt install failed — tunnel will be configured during onboarding"
   }
-  chmod +x /usr/local/bin/newt 2>/dev/null
-  ok "Newt installed"
+  # Verify it landed
+  if command -v newt &>/dev/null; then
+    ok "Newt installed"
+  else
+    warn "Newt binary not found after install"
+  fi
 else
   ok "Newt already installed"
 fi
 
 # ─── Step 6: ServerStick hermes-bridge (FastAPI + Svelte) ───────────
 step "Step 6/7: hermes-bridge (FastAPI + Svelte)"
-
-# Kill any stale service from a previous run before touching anything
-systemctl stop serverstick-bridge 2>/dev/null || true
-systemctl mask serverstick-bridge 2>/dev/null || true
 
 if [[ -f "${SS_OPT}/src/hermes-bridge/main.py" ]]; then
   ok "hermes-bridge code already present"
@@ -279,7 +279,7 @@ else
   DL_OK=0
   for attempt in 1 2 3; do
     if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 \
-         "https://get.serverstick.com/serverstick-code.tar.gz" -o "${TARBALL}" 2>/dev/null; then
+         "https://get.serverstick.com/serverstick-code.tar.gz" -o "${TARBALL}"; then
       # Verify it's a valid gzip before extracting
       if gzip -t "${TARBALL}" 2>/dev/null; then
         if tar xzf "${TARBALL}" -C "${SS_OPT}" 2>/dev/null; then

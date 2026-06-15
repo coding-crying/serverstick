@@ -115,6 +115,39 @@ else
   warn "OpenAI API not responding yet on :8642"
 fi
 
+# ─── Copy skills into Hermes sandbox ────────────────────────────────
+SKILLS_SRC="/opt/serverstick/src/hermes-bundle/skills"
+SOUL_SRC="/opt/serverstick/src/hermes-bundle/self-hosted-infra/soul/SOUL.md"
+SCRIPTS_SRC="/opt/serverstick/src/hermes-bundle/scripts"
+
+# Find the Hermes profile directory (NemoClaw sandbox uses ~/.hermes/profiles/)
+HERMES_PROFILES="/root/.hermes/profiles/serverstick"
+if [[ ! -d "$HERMES_PROFILES" ]]; then
+  # Try the user's home if not root
+  HERMES_PROFILES="$HOME/.hermes/profiles/serverstick"
+fi
+
+if [[ -d "$HERMES_PROFILES" ]]; then
+  log "Installing ServerStick skills into Hermes..."
+  mkdir -p "$HERMES_PROFILES/skills"
+  if [[ -d "$SKILLS_SRC" ]]; then
+    cp -r "$SKILLS_SRC"/* "$HERMES_PROFILES/skills/" 2>/dev/null
+    ok "Skills copied to $HERMES_PROFILES/skills/"
+  fi
+  if [[ -f "$SOUL_SRC" ]]; then
+    cp "$SOUL_SRC" "$HERMES_PROFILES/SOUL.md" 2>/dev/null
+    ok "SOUL.md copied to $HERMES_PROFILES/"
+  fi
+  if [[ -d "$SCRIPTS_SRC" ]]; then
+    mkdir -p "/etc/serverstick/scripts"
+    cp -r "$SCRIPTS_SRC"/* "/etc/serverstick/scripts/" 2>/dev/null
+    ok "Scripts copied to /etc/serverstick/scripts/"
+  fi
+else
+  warn "Hermes profile directory not found at $HERMES_PROFILES — skills not installed"
+  warn "Hermes will work but without ServerStick-specific skills"
+fi
+
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  Tier applied: $TIER"

@@ -20,6 +20,9 @@
   let wallet = $state('');
   let submitting = $state(false);
   let submitError = $state('');
+  let pollingJobId = $state(null);
+  let pollingStatus = $state('');
+  let pollingLogs = $state([]);
 
   const presetProviders = [
     { id: 'openrouter', name: 'OpenRouter', placeholder: 'sk-or-...' },
@@ -67,6 +70,30 @@
     }
   }
 
+  async function pollJob(jobId) {
+    pollingJobId = jobId;
+    pollingStatus = 'running';
+    while (true) {
+      try {
+        const status = await api.onboardBrainStatus(jobId);
+        pollingStatus = status.status;
+        pollingLogs = status.logs || [];
+        if (status.status === 'done') {
+          pollingJobId = null;
+          return true;
+        }
+        if (status.status === 'error') {
+          pollingJobId = null;
+          submitError = status.error || 'Brain onboarding failed';
+          return false;
+        }
+      } catch {
+        // Network blip, keep trying
+      }
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
   async function handleContinue() {
     if (!selectedOption || submitting) return;
     submitting = true;
@@ -102,7 +129,11 @@
         payload = { tier: 'managed', wallet: wallet };
       }
       const result = await api.onboardBrain(payload);
-      onnext({ ...payload, job_id: result.job_id });
+      // Poll the job until it's done
+      const ok = await pollJob(result.job_id);
+      if (ok) {
+        onnext({ ...payload, job_id: result.job_id });
+      }
     } catch (err) {
       submitError = err.message || 'Failed to configure brain';
     } finally {
@@ -335,12 +366,17 @@
   </div>
 
   <div class="onboarding-footer">
-    <button class="btn-back" onclick={onback}>← Back</button>
-    {#if submitError}
+    <button class="btn-back" onclick={onback} disabled={pollingJobId}>← Back</button>
+    {#if pollingJobId}
+      <div class="polling-status">
+        <div class="spinner"></div>
+        <span>Setting up your brain... {pollingStatus}</span>
+      </div>
+    {:else if submitError}
       <span class="error-msg">⚠ {submitError}</span>
     {/if}
-    <button class="btn-next" disabled={!selectedOption || submitting} onclick={handleContinue}>
-      {submitting ? 'Setting up…' : 'Continue →'}
+    <button class="btn-next" disabled={!selectedOption || submitting || !!pollingJobId} onclick={handleContinue}>
+      {submitting || pollingJobId ? 'Setting up…' : 'Continue →'}
     </button>
   </div>
 </div>
@@ -791,5 +827,23 @@
 
   .mine-result.unavailable {
     color: #ef4444;
+  }
+
+  .polling-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-dim);
+    font-size: 14px;
+    flex: 1;
+  }
+
+  .polling-status .spinner {
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
   }
 </style>
