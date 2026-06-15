@@ -224,73 +224,12 @@ def _load_recipes() -> list[dict]:
 
 
 # ─── Onboarding ─────────────────────────────────────────────────────────────
-async def _pangolin_create_site(subdomain: str) -> dict:
-    """Create a Pangolin site for this device. Returns {siteId, newtId, secret, subnet}."""
-    # Try env first, then fall back to a file path (Pangolin key is too long to
-    # inline in a write_filtered script — load it from disk at runtime)
-    api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
-    if not api_key:
-        key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
-        try:
-            api_key = open(key_path).read().strip()
-        except FileNotFoundError:
-            pass
-    api_url = os.getenv("SERVERSTICK_PANGOLIN_API_URL", "").rstrip("/")
-    int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
-    org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
+def _pangolin_auth() -> dict:
+    """Load Pangolin config from env or file. Returns {key, base, org_id, domain_id}.
 
-    if not api_key:
-        raise RuntimeError("SERVERSTICK_PANGOLIN_API_KEY not set in agent.env")
-    if not api_url or not int_port or not org_id:
-        raise RuntimeError(
-            "Missing Pangolin config. Need SERVERSTICK_PANGOLIN_API_URL, "
-            "SERVERSTICK_PANGOLIN_INT_PORT, and SERVERSTICK_PANGOLIN_ORG_ID in agent.env"
-        )
-
-    # Concatenate auth header to avoid having the literal key substituted by write filters
-    auth_header = "Bearer " + api_key
-
-    url = f"{api_url}:{int_port}/v1/org/{org_id}/site"
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.put(
-            url,
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"name": subdomain, "type": "newt"},
-        )
-        # If site already exists (conflict), we need to find its existing credentials.
-        # Pangolin returns the site data even on conflict for the same type,
-        # but if it doesn't, try to look it up from the local cache.
-        if r.status_code == 400 or r.status_code == 409:
-            # Site name taken — load existing site info from cache
-            resources = _load_resources()
-            cached_site = resources.get(f"_site_{subdomain}")
-            if cached_site:
-                return cached_site
-            # No cache — we can't recover the newt secret. Raise with helpful message.
-            raise RuntimeError(
-                f"Site '{subdomain}' already exists on Pangolin but we don't have its "
-                f"tunnel credentials. Either pick a different subdomain, or delete the "
-                f"existing site from the Pangolin dashboard and try again."
-            )
-        r.raise_for_status()
-        data = r.json().get("data", {})
-        if not data.get("siteId"):
-            raise RuntimeError(f"Pangolin site create returned no siteId: {r.text}")
-        site_info = {
-            "site_id": data.get("siteId"),
-            "newt_id": data.get("newtId"),
-            "newt_secret": data.get("secret"),
-            "subnet": data.get("subnet"),
-        }
-        # Cache the site info for future re-provisioning
-        resources = _load_resources()
-        resources[f"_site_{subdomain}"] = site_info
-        _save_resources(resources)
-        return site_info
-
-
-async def _pangolin_create_resource(subdomain: str, svc_subdomain: str, port: int, site_id: int) -> dict:
-    """Create a Pangolin resource (subdomain) pointing to a local port via the given site."""
+    The key is loaded from /etc/serverstick/pangolin-api-key at runtime — never
+    inlined in the script (write filters may redact long keys).
+    """
     api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
     if not api_key:
         key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
@@ -302,60 +241,181 @@ async def _pangolin_create_resource(subdomain: str, svc_subdomain: str, port: in
     int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
     org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
     domain_id = os.getenv("SERVERSTICK_PANGOLIN_DOMAIN_ID", "domain1")
-    auth_header = "Bearer " + api_key
-    base = f"{api_url}:{int_port}"
+    if not api_key:
+        raise RuntimeError("SERVERSTICK_PANGOLIN_API_KEY not set in agent.env")
+    if not api_url or not int_port or not org_id:
+        raise RuntimeError(
+            "Missing Pangolin config. Need SERVERSTICK_PANGOLIN_API_URL, "
+            "SERVERSTICK_PANGOLIN_INT_PORT, and SERVERSTICK_PANGOLIN_ORG_ID in agent.env"
+        )
+    return {
+        "key": api_key,
+        "auth": "Bearer " + api_key,
+        "base": f"{api_url}:{int_port}",
+        "org_id": org_id,
+        "domain_id": domain_id,
+    }
 
-    # Create the resource
-    full_sub = f"{svc_subdomain}.{subdomain}"
+
+async def _pangolin_get_site_by_name(name: str) -> Optional[dict]:
+    """Find a site by name. Returns {site_id, newt_id, newt_secret, online} or None.
+
+    Pangolin's Integration API has NO list-sites endpoint. This function is
+    only useful if you already know the site ID. The caller should use the
+    local cache (`/etc/serverstick/resources.json`) for site lookups.
+    """
+    cfg = _pangolin_auth()
+    # NOTE: GET /v1/org/{orgId}/site returns 404 (not implemented)
+    # The only way to enumerate sites is to read the Pangolin DB directly,
+    # which we can't do from the bridge. Use the local cache.
+    return None
+
+
+async def _pangolin_get_or_create_site(subdomain: str) -> dict:
+    """Idempotent: returns existing site with this name, or creates one.
+
+    IMPORTANT: Pangolin's PUT is NOT idempotent — it creates a new site every
+    time. We MUST check the local cache first to avoid duplicate sites.
+
+    NOTE: Pangolin's Integration API has no list endpoint, so we can't verify
+    a cached site still exists. If the site was deleted from Pangolin, the
+    caller will get an error when starting Newt and can re-onboard.
+    """
+    # 1. Check local cache (the ONLY reliable way to look up sites)
+    cached = _load_resources().get(f"_site_{subdomain}")
+    if cached and cached.get("site_id") and cached.get("newt_id") and cached.get("newt_secret"):
+        return cached
+
+    # 2. Create new site
+    cfg = _pangolin_auth()
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.put(
-            f"{base}/v1/org/{org_id}/resource",
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"name": svc_subdomain, "subdomain": full_sub, "domainId": domain_id, "mode": "http"},
+            f"{cfg['base']}/v1/org/{cfg['org_id']}/site",
+            headers={"Authorization": cfg["auth"], "Content-Type": "application/json"},
+            json={"name": subdomain, "type": "newt"},
         )
+        if r.status_code == 409 or r.status_code == 400:
+            # Site name taken on Pangolin but not in our cache. The user must
+            # either pick a different name, or import the site credentials
+            # manually (or wipe the Pangolin DB and start over).
+            raise RuntimeError(
+                f"Site '{subdomain}' already exists on Pangolin but is not in the local cache. "
+                f"Either pick a different subdomain, or import the site credentials into "
+                f"/etc/serverstick/resources.json under the key '_site_{subdomain}'."
+            )
+        r.raise_for_status()
+        data = r.json().get("data", {})
+        if not data.get("siteId"):
+            raise RuntimeError(f"Pangolin site create returned no siteId: {r.text}")
+        site_info = {
+            "site_id": data.get("siteId"),
+            "newt_id": data.get("newtId"),
+            "newt_secret": data.get("secret"),
+            "online": False,
+            "address": data.get("address"),
+        }
+        # Cache it
+        resources = _load_resources()
+        resources[f"_site_{subdomain}"] = site_info
+        _save_resources(resources)
+        return site_info
+
+
+async def _pangolin_get_or_create_resource(
+    site_id: int, device: str, svc_subdomain: str, port: int
+) -> dict:
+    """Idempotent: returns existing resource for {svc_subdomain}.{device}, or creates one.
+
+    Cache-first: reads /etc/serverstick/resources.json. If the resource is
+    already there AND it targets our site, return it. Otherwise create a new
+    resource (handles case where cache was lost or site changed).
+    """
+    cfg = _pangolin_auth()
+    full_sub = f"{svc_subdomain}.{device}"
+    auth = cfg["auth"]
+    base = cfg["base"]
+
+    # 1. Check local cache
+    cached = _load_resources().get(full_sub)
+    if cached and cached.get("site_id") == site_id and cached.get("resource_id"):
+        return {
+            "resource_id": cached["resource_id"],
+            "target_id": cached.get("target_id"),
+            "subdomain": full_sub,
+            "port": port,
+        }
+
+    # 2. Create new resource
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.put(
+            f"{base}/v1/org/{cfg['org_id']}/resource",
+            headers={"Authorization": auth, "Content-Type": "application/json"},
+            json={
+                "name": svc_subdomain,
+                "subdomain": full_sub,
+                "domainId": cfg["domain_id"],
+                "mode": "http",
+            },
+        )
+        if r.status_code == 409:
+            # Resource exists somewhere — we can't list resources via API, so
+            # we have to recreate with a unique name. The subdomain is already
+            # unique by {svc_subdomain}.{device}, so this shouldn't normally
+            # happen unless there's a name collision across devices.
+            raise RuntimeError(
+                f"Resource '{full_sub}' already exists on Pangolin but is not in our "
+                f"local cache. Delete it from the Pangolin dashboard or import it."
+            )
         r.raise_for_status()
         resource_id = r.json().get("data", {}).get("resourceId")
         if not resource_id:
             raise RuntimeError(f"Pangolin resource create returned no resourceId: {r.text}")
 
-        # Wire it to the local port via a target (verified working path: /v1/resource/{id}/target)
+        # Wire target
         r2 = await client.put(
             f"{base}/v1/resource/{resource_id}/target",
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            headers={"Authorization": auth, "Content-Type": "application/json"},
             json={"siteId": site_id, "ip": "127.0.0.1", "port": port, "method": "http"},
         )
         r2.raise_for_status()
         target_id = r2.json().get("data", {}).get("targetId")
 
-        # Make the resource public (sso=0) via POST update.
-        # Pangolin's PUT (create) doesn't accept sso, but POST (update) does.
+        # Make it public (sso=0)
         try:
-            r3 = await client.post(
+            await client.post(
                 f"{base}/v1/resource/{resource_id}",
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                headers={"Authorization": auth, "Content-Type": "application/json"},
                 json={"sso": False},
             )
         except Exception:
-            pass  # Best effort — may not work on all Pangolin versions
+            pass  # Best effort
 
-        # Record in local cache for future lookups (Pangolin has no GET list endpoint)
-        resources = _load_resources()
-        resources[full_sub] = {"resource_id": resource_id, "target_id": target_id, "port": port, "site_id": site_id}
-        _save_resources(resources)
-
-        return {"resource_id": resource_id, "target_id": target_id, "subdomain": full_sub}
+    # Cache it
+    resources = _load_resources()
+    resources[full_sub] = {
+        "resource_id": resource_id,
+        "target_id": target_id,
+        "port": port,
+        "site_id": site_id,
+    }
+    _save_resources(resources)
+    return {"resource_id": resource_id, "target_id": target_id, "subdomain": full_sub, "port": port}
 
 
 @app.post("/api/onboard/subdomain")
 async def onboard_subdomain(req: SubdomainRequest):
-    """Create a Pangolin site, write Newt config, and provision the default 8 services."""
+    """Get or create a Pangolin site, write Newt config, and provision the default 8 services.
+
+    Idempotent: re-running with the same subdomain reuses the existing site and
+    resources. Re-running with a new subdomain creates a fresh site.
+    """
     sub = req.subdomain.strip().lower()
     if not sub or not sub.replace("-", "").isalnum() or len(sub) > 30:
         raise HTTPException(400, "subdomain must be alphanumeric/- up to 30 chars")
 
-    # 1. Create the site
+    # 1. Get or create the site (idempotent — won't duplicate)
     try:
-        site = await _pangolin_create_site(sub)
+        site = await _pangolin_get_or_create_site(sub)
     except httpx.HTTPStatusError as e:
         raise HTTPException(502, f"Pangolin site create failed: {e.response.text}")
     except Exception as e:
@@ -375,33 +435,36 @@ async def onboard_subdomain(req: SubdomainRequest):
     BRIDGE_DIR.mkdir(parents=True, exist_ok=True)
     (BRIDGE_DIR / "device_name").write_text(sub)
 
-    # 4. Provision the 8 default services
+    # 4. Provision the 8 default services (idempotent)
     subdomains = []
+    errors = []
     for svc_id, meta in SERVICES_CATALOG.items():
         if svc_id == "hermes":
             continue  # NemoClaw gets created on first onboard, not here
         try:
-            r = await _pangolin_create_resource(sub, meta["subdomain"], meta["port"], site["site_id"])
+            r = await _pangolin_get_or_create_resource(
+                site["site_id"], sub, meta["subdomain"], meta["port"]
+            )
             subdomains.append(r["subdomain"])
         except Exception as e:
-            # Don't fail whole onboarding for one service
-            subdomains.append(f"{meta['subdomain']}.{sub} (error: {e})")
+            errors.append(f"{meta['subdomain']}.{sub}: {e}")
+            subdomains.append(f"{meta['subdomain']}.{sub} (error)")
 
-    # 5. Start Newt tunnel
+    # 5. Start Newt tunnel (idempotent)
     newt_started = False
     try:
-        rc, out, err = _run(["systemctl", "enable", "serverstick-newt"], timeout=10)
-        rc, out, err = _run(["systemctl", "restart", "serverstick-newt"], timeout=15)
+        _run(["systemctl", "enable", "serverstick-newt"], timeout=10)
+        rc, _, _ = _run(["systemctl", "restart", "serverstick-newt"], timeout=15)
         newt_started = rc == 0
     except Exception:
         pass
 
-    # 6. Start Docker services
+    # 6. Start Docker services (idempotent)
     docker_started = False
     compose_file = DOCKER_COMPOSE
     if compose_file.exists():
         try:
-            rc, out, err = _run(
+            rc, _, _ = _run(
                 ["docker", "compose", "-f", str(compose_file), "up", "-d"],
                 timeout=120,
             )
@@ -414,7 +477,9 @@ async def onboard_subdomain(req: SubdomainRequest):
         "subdomain": sub,
         "site_id": site["site_id"],
         "newt_id": site["newt_id"],
+        "site_reused": site.get("online", False) or bool(site.get("newt_secret")),
         "subdomains": subdomains,
+        "errors": errors,
         "newt_config_written": True,
         "newt_started": newt_started,
         "docker_started": docker_started,
@@ -678,8 +743,8 @@ class ProvisionResourceRequest(BaseModel):
 
 @app.post("/api/services/provision")
 async def provision_resource(req: ProvisionResourceRequest):
-    """Create a Pangolin resource (sub-subdomain) for an existing service.
-    Call this after onboarding to add new services or re-provision failed ones."""
+    """Get or create a Pangolin resource (sub-subdomain) for an existing service.
+    Idempotent — safe to call multiple times."""
     device = (BRIDGE_DIR / "device_name").read_text().strip() if (BRIDGE_DIR / "device_name").exists() else ""
     if not device:
         raise HTTPException(400, "No device name set — run subdomain onboarding first")
@@ -689,42 +754,15 @@ async def provision_resource(req: ProvisionResourceRequest):
     if not meta:
         raise HTTPException(400, f"Unknown service: {req.service_id}. Available: {list(SERVICES_CATALOG.keys())}")
 
-    # Get site info — we need the siteId from Pangolin
-    # Find the site for this device by listing sites
-    api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
-    if not api_key:
-        key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
-        try:
-            api_key = open(key_path).read().strip()
-        except FileNotFoundError:
-            pass
-    api_url = os.getenv("SERVERSTICK_PANGOLIN_API_URL", "").rstrip("/")
-    int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
-    org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
-    if not api_key or not api_url or not org_id:
-        raise HTTPException(500, "Pangolin API not configured")
-
-    auth_header = "Bearer " + api_key
-    base = f"{api_url}:{int_port}"
-
-    # Find siteId for this device name
-    async with httpx.AsyncClient(timeout=30) as client:
-        r = await client.get(f"{base}/v1/org/{org_id}/site", headers={"Authorization": auth_header})
-        r.raise_for_status()
-        sites = r.json().get("data", [])
-        site_id = None
-        for s in sites:
-            if s.get("name") == device:
-                site_id = s.get("siteId")
-                break
-        if not site_id:
-            raise HTTPException(404, f"No Pangolin site found for device '{device}'")
+    # Get the site for this device (idempotent)
+    site = await _pangolin_get_or_create_site(device)
+    site_id = site["site_id"]
 
     svc_sub = req.subdomain_override or meta["subdomain"]
     try:
-        result = await _pangolin_create_resource(device, svc_sub, meta["port"], site_id)
+        result = await _pangolin_get_or_create_resource(site_id, device, svc_sub, meta["port"])
     except Exception as e:
-        raise HTTPException(502, f"Failed to create resource: {e}")
+        raise HTTPException(502, f"Failed to provision resource: {e}")
 
     return {"status": "ok", "subdomain": result["subdomain"], "resource_id": result["resource_id"]}
 
@@ -748,56 +786,40 @@ async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest)
     if not new_sub or not new_sub.replace("-", "").isalnum() or len(new_sub) > 30:
         raise HTTPException(400, "subdomain must be alphanumeric/- up to 30 chars")
 
-    # Pangolin API setup
-    api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
-    if not api_key:
-        key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
-        try:
-            api_key = open(key_path).read().strip()
-        except FileNotFoundError:
-            pass
-    api_url = os.getenv("SERVERSTICK_PANGOLIN_API_URL", "").rstrip("/")
-    int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
-    org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
-    if not api_key or not api_url or not org_id:
-        raise HTTPException(500, "Pangolin API not configured")
-
-    auth_header = "Bearer " + api_key
-    base = f"{api_url}:{int_port}"
-
     old_full_sub = f"{meta['subdomain']}.{device}"
     new_full_sub = f"{new_sub}.{device}"
 
-    # Look up old resource from local cache (Pangolin has no GET list endpoint)
+    if old_full_sub == new_full_sub:
+        return {"status": "ok", "old_subdomain": old_full_sub, "new_subdomain": new_full_sub, "no_change": True}
+
+    # Look up old resource from local cache
     resources = _load_resources()
     old_resource = resources.get(old_full_sub)
-    old_site_id = old_resource.get("site_id") if old_resource else None
+    cfg = _pangolin_auth()
 
-    # If we don't have the site_id cached, find it from the site list (PUT returns existing)
-    if not old_site_id:
-        # Create-or-get site (PUT is idempotent for existing sites)
-        try:
-            site = await _pangolin_create_site(device)
-            old_site_id = site["site_id"]
-        except Exception:
-            raise HTTPException(500, "Could not find or create Pangolin site for this device")
+    # Get the site for this device (idempotent — find existing or fail gracefully)
+    try:
+        site = await _pangolin_get_or_create_site(device)
+    except Exception:
+        raise HTTPException(500, "Could not find or create Pangolin site for this device")
+    site_id = site["site_id"]
 
     async with httpx.AsyncClient(timeout=30) as client:
         # Delete old resource if we have its ID
         if old_resource and old_resource.get("resource_id"):
             try:
                 await client.delete(
-                    f"{base}/v1/resource/{old_resource['resource_id']}",
-                    headers={"Authorization": auth_header},
+                    f"{cfg['base']}/v1/resource/{old_resource['resource_id']}",
+                    headers={"Authorization": cfg["auth"]},
                 )
             except Exception:
-                pass  # Best effort — old resource might already be gone
+                pass  # Best effort
 
-        # Create new resource
+        # Create new resource (use the get_or_create to be safe)
         r = await client.put(
-            f"{base}/v1/org/{org_id}/resource",
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"name": new_sub, "subdomain": new_full_sub, "domainId": os.getenv("SERVERSTICK_PANGOLIN_DOMAIN_ID", "domain1"), "mode": "http"},
+            f"{cfg['base']}/v1/org/{cfg['org_id']}/resource",
+            headers={"Authorization": cfg["auth"], "Content-Type": "application/json"},
+            json={"name": new_sub, "subdomain": new_full_sub, "domainId": cfg["domain_id"], "mode": "http"},
         )
         r.raise_for_status()
         resource_id = r.json().get("data", {}).get("resourceId")
@@ -806,27 +828,32 @@ async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest)
 
         # Wire it to the local port
         r2 = await client.put(
-            f"{base}/v1/resource/{resource_id}/target",
-            headers={"Authorization": auth_header, "Content-Type": "application/json"},
-            json={"siteId": old_site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
+            f"{cfg['base']}/v1/resource/{resource_id}/target",
+            headers={"Authorization": cfg["auth"], "Content-Type": "application/json"},
+            json={"siteId": site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
         )
         r2.raise_for_status()
+        target_id = r2.json().get("data", {}).get("targetId")
 
-        # Make the resource public (sso=0) — Pangolin's Integration API doesn't
-        # accept sso on create, but POST /v1/resource/{id} can update it.
+        # Make it public (sso=0)
         try:
-            r3 = await client.post(
-                f"{base}/v1/resource/{resource_id}",
-                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+            await client.post(
+                f"{cfg['base']}/v1/resource/{resource_id}",
+                headers={"Authorization": cfg["auth"], "Content-Type": "application/json"},
                 json={"sso": False},
             )
         except Exception:
-            pass  # Best effort — some Pangolin versions may not support this
+            pass
 
     # Update local cache: remove old, add new
     if old_full_sub in resources:
         del resources[old_full_sub]
-    resources[new_full_sub] = {"resource_id": resource_id, "port": meta["port"], "site_id": old_site_id}
+    resources[new_full_sub] = {
+        "resource_id": resource_id,
+        "target_id": target_id,
+        "port": meta["port"],
+        "site_id": site_id,
+    }
     _save_resources(resources)
 
     # Update catalog in memory so next GET /api/services reflects the new subdomain
