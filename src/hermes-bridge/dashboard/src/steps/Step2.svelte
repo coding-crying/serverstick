@@ -3,7 +3,7 @@
 
   let { onnext, onback, subdomain = '' } = $props();
 
-  let selectedOption = $state(null); // 'endpoint' | 'local' | 'mine'
+  let selectedOption = $state(null); // 'byo' | 'local' | 'managed'
   let endpointMode = $state('preset'); // 'preset' | 'custom'
   let apiKey = $state('');
   let customBaseUrl = $state('');
@@ -73,12 +73,12 @@
     submitError = '';
     try {
       let payload;
-      if (selectedOption === 'endpoint') {
+      if (selectedOption === 'byo') {
         if (endpointMode === 'preset') {
           if (!apiKey.trim()) throw new Error('API key is required');
           if (!selectedModel) throw new Error('Pick a model');
           payload = {
-            tier: 'endpoint',
+            tier: 'byo',
             provider: selectedPresetProvider,
             api_key: apiKey,
             model: selectedModel,
@@ -87,7 +87,7 @@
           if (!customApiKey.trim()) throw new Error('API key is required');
           if (!customModel.trim()) throw new Error('Model name is required');
           payload = {
-            tier: 'endpoint',
+            tier: 'byo',
             provider: 'custom',
             api_key: customApiKey,
             base_url: customBaseUrl,
@@ -97,9 +97,9 @@
       } else if (selectedOption === 'local') {
         if (!selectedModel) throw new Error('Pick a model from the scan');
         payload = { tier: 'local', model: selectedModel };
-      } else if (selectedOption === 'mine') {
+      } else if (selectedOption === 'managed') {
         if (!wallet.trim()) throw new Error('XMR wallet address is required');
-        payload = { tier: 'mine', wallet: wallet };
+        payload = { tier: 'managed', wallet: wallet };
       }
       const result = await api.onboardBrain(payload);
       onnext({ ...payload, job_id: result.job_id });
@@ -117,14 +117,14 @@
 
   <div class="options-grid">
 
-    <!-- ====== Option 1: Add an endpoint ====== -->
+    <!-- ====== Option 1: BYO endpoint ====== -->
     <div
-      class="option-card endpoint-card"
-      class:selected={selectedOption === 'endpoint'}
+      class="option-card byo-card"
+      class:selected={selectedOption === 'byo'}
       role="button"
       tabindex="0"
-      onclick={() => selectOption('endpoint')}
-      onkeydown={(e) => e.key === 'Enter' && selectOption('endpoint')}
+      onclick={() => selectOption('byo')}
+      onkeydown={(e) => e.key === 'Enter' && selectOption('byo')}
     >
       <div class="option-header">
         <span class="option-icon">⚡</span>
@@ -134,7 +134,7 @@
         </div>
       </div>
 
-      {#if selectedOption === 'endpoint'}
+      {#if selectedOption === 'byo'}
         <div class="option-body">
           <div class="mode-toggle">
             <button class="mode-btn" class:active={endpointMode === 'preset'} onclick={() => endpointMode = 'preset'}>Providers</button>
@@ -263,14 +263,14 @@
       {/if}
     </div>
 
-    <!-- ====== Option 3: Mine for credit ====== -->
+    <!-- ====== Option 3: Managed (mine for credit) ====== -->
     <div
-      class="option-card mine-card"
-      class:selected={selectedOption === 'mine'}
+      class="option-card managed-card"
+      class:selected={selectedOption === 'managed'}
       role="button"
       tabindex="0"
-      onclick={() => selectOption('mine')}
-      onkeydown={(e) => e.key === 'Enter' && selectOption('mine')}
+      onclick={() => selectOption('managed')}
+      onkeydown={(e) => e.key === 'Enter' && selectOption('managed')}
     >
       <div class="option-header">
         <span class="option-icon">⛏️</span>
@@ -280,7 +280,7 @@
         </div>
       </div>
 
-      {#if selectedOption === 'mine'}
+      {#if selectedOption === 'managed'}
         <div class="option-body">
           {#if !mineCheckRunning && mineCheckResult === null}
             <p class="body-text">
@@ -397,7 +397,7 @@
     box-shadow: 0 0 30px var(--accent-glow);
   }
 
-  .endpoint-card.selected {
+  .byo-card.selected {
     border-color: #8b5cf6;
     box-shadow: 0 0 30px rgba(139, 92, 246, 0.2);
   }
@@ -407,7 +407,7 @@
     box-shadow: 0 0 30px rgba(52, 211, 153, 0.15);
   }
 
-  .mine-card.selected {
+  .managed-card.selected {
     border-color: #f59e0b;
     box-shadow: 0 0 30px rgba(245, 158, 11, 0.15);
   }
