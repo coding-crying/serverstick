@@ -1,5 +1,5 @@
 # ServerStick Docker Compose — per-device services
-# Auto-managed by Pi Agent. Do not edit manually.
+# Auto-managed by hermes-bridge. Do not edit manually.
 
 services:
   filebrowser:

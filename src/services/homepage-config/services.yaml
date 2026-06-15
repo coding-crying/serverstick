@@ -66,9 +66,9 @@ services:
         href: https://api.serverstick.com
         icon: mdi-unicorn-variant
 
-      - name: Pi Agent
+      - name: Hermes
         description: AI assistant control panel
-        href: https://pi.serverstick.com
+        href: https://hermes.serverstick.com
         icon: mdi-robot
 
 widgets:

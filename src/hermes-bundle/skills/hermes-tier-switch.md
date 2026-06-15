@@ -28,7 +28,7 @@ Swap the inference backend Hermes uses — driven by GUI choices written to `/et
 
 ### Managed (`tier=managed`)
 - XMR mining on the device funds a TokenRouter account
-- Pi Agent runs XMR miner in background, accumulates credits
+- hermes-bridge runs XMR miner in background, accumulates credits
 - Hermes uses TokenRouter API (serverstick's own router)
 - NemoClaw env: `INFERENCE_PROVIDER=openai`, `OPENAI_API_KEY=$TOKENROUTER_KEY`, `OPENAI_BASE_URL=https://api.tokenrouter.com/v1`
 
