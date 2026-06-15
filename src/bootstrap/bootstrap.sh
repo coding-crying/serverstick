@@ -230,9 +230,24 @@ else
   export NEMOCLAW_AGENT=hermes
   # Non-interactive install only — onboard happens in Svelte GUI
   export NEMOCLAW_NON_INTERACTIVE=1
-  curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash
-  ok "NemoClaw installed"
-  NEMOCLAW_CMD="nemohermes"
+  # The install URL is internal to NVIDIA; this may not work in all environments.
+  # NemoClaw is OPTIONAL — ServerStick works without it (you just can't chat with Hermes).
+  if curl -fsSL https://www.nvidia.com/nemoclaw.sh -o /tmp/nemoclaw-install.sh 2>/dev/null; then
+    if bash /tmp/nemoclaw-install.sh; then
+      ok "NemoClaw installed"
+    else
+      warn "NemoClaw install script ran but failed"
+      warn "ServerStick will work, but the AI agent (Hermes) won't be available"
+      warn "To install manually later: https://www.nvidia.com/nemoclaw"
+      NEMOCLAW_CMD=""
+    fi
+  else
+    warn "Could not download NemoClaw installer (offline or firewall?)"
+    warn "ServerStick will work, but the AI agent (Hermes) won't be available"
+    warn "To install manually later: https://www.nvidia.com/nemoclaw"
+    NEMOCLAW_CMD=""
+  fi
+  NEMOCLAW_CMD="${NEMOCLAW_CMD:-nemohermes}"
 fi
 
 # Note: NemoClaw onboard is NOT run here — the Svelte onboarding wizard builds the
@@ -401,11 +416,32 @@ chmod 600 "${SS_DIR}/agent.env"
 
 # Fetch the Pangolin API key from the provisioning server (not stored in the public repo)
 log "Fetching provisioning credentials..."
-if curl -fsSL "https://get.serverstick.com/pangolin-key.txt" -o "${SS_DIR}/pangolin-api-key" 2>/dev/null && [[ -s "${SS_DIR}/pangolin-api-key" ]]; then
+if curl -fsSL --max-time 30 "https://get.serverstick.com/pangolin-key.txt" -o "${SS_DIR}/pangolin-api-key" 2>/dev/null && [[ -s "${SS_DIR}/pangolin-api-key" ]]; then
   chmod 600 "${SS_DIR}/pangolin-api-key"
-  ok "Provisioning key installed"
+  ok "Provisioning key installed (Pangolin routing will work)"
 else
-  warn "Could not fetch provisioning key — Pangolin routing will need manual config"
+  # This is a HARD failure for the hosted tier. Without the key, the user
+  # can still use ServerStick locally (services on localhost), but they
+  # can't get public HTTPS URLs via Pangolin. Give them a clear recovery path.
+  error "Could not fetch Pangolin API key from get.serverstick.com
+
+This means public HTTPS URLs (*.serverstick.com) won't work.
+
+If you're an EARLY USER receiving a personal key from Will:
+  Ask him for your key, then run:
+    echo 'YOUR_KEY_HERE' | sudo tee /etc/serverstick/pangolin-api-key
+    sudo chmod 600 /etc/serverstick/pangolin-api-key
+    sudo systemctl restart serverstick-bridge
+
+If you're trying SELF-HOSTED mode (no Pangolin):
+  Use a Cloudflare Tunnel or Tailscale — see README.
+
+If you have a fresh key and get.serverstick.com is down:
+  Wait a few minutes and re-run the bootstrap.
+
+Diagnosing:
+  curl -v https://get.serverstick.com/pangolin-key.txt
+"
 fi
 ok "Config written to ${SS_DIR}/agent.env"
 
@@ -547,8 +583,27 @@ fi
 
 if [[ ${ERRORS} -gt 0 ]]; then
   warn "${ERRORS} warning(s) above. ServerStick may not work fully."
+  echo ""
+  warn "Common fixes:"
+  warn "  - Missing pangolin-key: paste it manually (see Step 6 output above)"
+  warn "  - Bridge not running:  sudo systemctl status serverstick-bridge"
+  warn "  - Need help?           https://github.com/coding-crying/serverstick/issues"
 else
   ok "All components verified."
+fi
+
+# Print a "verify your install" command the friend can run later
+echo ""
+log "To verify your install later, run:"
+echo "    serverstick-verify"
+echo "or manually:"
+echo "    curl -s http://localhost:${AGENT_PORT}/api/health"
+echo "    curl -sk https://<your-subdomain>.serverstick.com"
+
+# Install the verify script to /usr/local/bin
+if [[ -f "${SS_OPT}/src/bootstrap/serverstick-verify.sh" ]]; then
+  install -m 0755 "${SS_OPT}/src/bootstrap/serverstick-verify.sh" /usr/local/bin/serverstick-verify
+  ok "Installed verify command: serverstick-verify"
 fi
 
 echo ""
