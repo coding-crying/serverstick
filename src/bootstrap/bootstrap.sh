@@ -116,8 +116,10 @@ fi
 # Kill any stale service from a previous run BEFORE any step runs.
 # If a prior install left a broken service file, systemd has been
 # crash-looping it since boot. Stop + mask immediately.
-systemctl stop serverstick-bridge 2>/dev/null || true
-systemctl mask serverstick-bridge 2>/dev/null || true
+for svc in serverstick-bridge serverstick-newt serverstick-agent; do
+  systemctl stop "$svc" 2>/dev/null || true
+  systemctl mask "$svc" 2>/dev/null || true
+done
 
 # Verify required tools as we go
 require() {
@@ -230,24 +232,32 @@ else
   export NEMOCLAW_AGENT=hermes
   # Non-interactive install only — onboard happens in Svelte GUI
   export NEMOCLAW_NON_INTERACTIVE=1
+  # Required for non-interactive install (the install script enforces this)
+  export NEMOCLAW_ACCEPT_THIRD_PARTY_SOFTWARE=1
   # The install URL is internal to NVIDIA; this may not work in all environments.
   # NemoClaw is OPTIONAL — ServerStick works without it (you just can't chat with Hermes).
+  INSTALL_OK=0
   if curl -fsSL https://www.nvidia.com/nemoclaw.sh -o /tmp/nemoclaw-install.sh 2>/dev/null; then
-    if bash /tmp/nemoclaw-install.sh; then
-      ok "NemoClaw installed"
-    else
-      warn "NemoClaw install script ran but failed"
-      warn "ServerStick will work, but the AI agent (Hermes) won't be available"
-      warn "To install manually later: https://www.nvidia.com/nemoclaw"
-      NEMOCLAW_CMD=""
+    bash /tmp/nemoclaw-install.sh 2>&1 | tail -20 || true
+    # Success = nemoclaw binary is callable. The post-install `onboard` step
+    # may fail (e.g. stale session, network) but we don't care — we re-onboard
+    # from the Svelte GUI later anyway.
+    if command -v nemoclaw &>/dev/null || command -v nemohermes &>/dev/null; then
+      INSTALL_OK=1
+      ok "NemoClaw installed ($(nemoclaw --version 2>/dev/null || echo 'unknown version'))"
     fi
-  else
-    warn "Could not download NemoClaw installer (offline or firewall?)"
+  fi
+  if [[ "${INSTALL_OK}" -ne 1 ]]; then
+    warn "NemoClaw install did not complete"
     warn "ServerStick will work, but the AI agent (Hermes) won't be available"
     warn "To install manually later: https://www.nvidia.com/nemoclaw"
     NEMOCLAW_CMD=""
+  else
+    NEMOCLAW_CMD="nemohermes"
+    if ! command -v nemohermes &>/dev/null; then
+      NEMOCLAW_CMD="NEMOCLAW_AGENT=hermes nemoclaw"
+    fi
   fi
-  NEMOCLAW_CMD="${NEMOCLAW_CMD:-nemohermes}"
 fi
 
 # Note: NemoClaw onboard is NOT run here — the Svelte onboarding wizard builds the
@@ -258,39 +268,6 @@ fi
 #   3. hermes-bridge serves Svelte GUI on :8080
 #   4. User picks subdomain, services, AI tier, messaging in GUI
 #   5. GUI runs NemoClaw onboard non-interactively with built env vars
-
-# ─── Step 4b: Install Hermes bundle (skills + scripts + self-hosted-infra) ──
-step "Step 4b/7: Hermes bundle (ServerStick custom skills)"
-
-HERMES_BUNDLE_SRC="${SS_OPT}/src/hermes-bundle"
-HERMES_SKILLS_DST="/root/.hermes/profiles/serverstick/skills"
-HERMES_SCRIPTS_DST="/etc/serverstick/hi-scripts"
-HERMES_INFRA_DST="/etc/serverstick/hi-infra"
-
-if [[ -d "${HERMES_BUNDLE_SRC}" ]]; then
-  # Install skills into the active Hermes profile
-  mkdir -p "${HERMES_SKILLS_DST}"
-  cp -n "${HERMES_BUNDLE_SRC}"/skills/*.md "${HERMES_SKILLS_DST}/" 2>/dev/null || true
-  ok "Hermes skills installed to ${HERMES_SKILLS_DST}"
-
-  # Install scripts (used by Svelte GUI and Hermes)
-  mkdir -p "${HERMES_SCRIPTS_DST}"
-  cp "${HERMES_BUNDLE_SRC}"/scripts/*.sh "${HERMES_SCRIPTS_DST}/"
-  chmod +x "${HERMES_SCRIPTS_DST}"/*.sh
-  ok "Hermes scripts installed to ${HERMES_SCRIPTS_DST}"
-
-  # Install self-hosted-infra (NemoClaw sandbox internal config)
-  mkdir -p "${HERMES_INFRA_DST}"
-  cp -rn "${HERMES_BUNDLE_SRC}/self-hosted-infra/"* "${HERMES_INFRA_DST}/" 2>/dev/null || true
-  ok "Self-hosted-infra installed to ${HERMES_INFRA_DST}"
-
-  # Install config templates (Svelte GUI fills these)
-  mkdir -p "${SS_DIR}/templates"
-  cp "${HERMES_BUNDLE_SRC}"/config/*.template "${SS_DIR}/templates/"
-  ok "Config templates installed to ${SS_DIR}/templates"
-else
-  warn "Hermes bundle not found at ${HERMES_BUNDLE_SRC} — skipping"
-fi
 
 # ─── Step 5: Newt (tunnel client) ───────────────────────────────────
 step "Step 5/7: Newt tunnel client"
@@ -356,6 +333,39 @@ else
     error "Downloaded code missing src/hermes-bridge/ (got: $(ls "${SS_OPT}/src" 2>/dev/null | tr '\n' ' '))"
   fi
   ok "Code downloaded"
+fi
+
+# ─── Step 4b (post-download): Install Hermes bundle ─────────────────
+# This had to come AFTER the tarball download — the bundle lives in the tarball.
+HERMES_BUNDLE_SRC="${SS_OPT}/src/hermes-bundle"
+HERMES_SKILLS_DST="/root/.hermes/profiles/serverstick/skills"
+HERMES_SCRIPTS_DST="/etc/serverstick/hi-scripts"
+HERMES_INFRA_DST="/etc/serverstick/hi-infra"
+
+if [[ -d "${HERMES_BUNDLE_SRC}" ]]; then
+  step "Step 4b/7: Hermes bundle (ServerStick custom skills)"
+  # Install skills into the active Hermes profile
+  mkdir -p "${HERMES_SKILLS_DST}"
+  cp -n "${HERMES_BUNDLE_SRC}"/skills/*.md "${HERMES_SKILLS_DST}/" 2>/dev/null || true
+  ok "Hermes skills installed to ${HERMES_SKILLS_DST}"
+
+  # Install scripts (used by Svelte GUI and Hermes)
+  mkdir -p "${HERMES_SCRIPTS_DST}"
+  cp "${HERMES_BUNDLE_SRC}"/scripts/*.sh "${HERMES_SCRIPTS_DST}/"
+  chmod +x "${HERMES_SCRIPTS_DST}"/*.sh
+  ok "Hermes scripts installed to ${HERMES_SCRIPTS_DST}"
+
+  # Install self-hosted-infra (NemoClaw sandbox internal config)
+  mkdir -p "${HERMES_INFRA_DST}"
+  cp -rn "${HERMES_BUNDLE_SRC}/self-hosted-infra/"* "${HERMES_INFRA_DST}/" 2>/dev/null || true
+  ok "Self-hosted-infra installed to ${HERMES_INFRA_DST}"
+
+  # Install config templates (Svelte GUI fills these)
+  mkdir -p "${SS_DIR}/templates"
+  cp "${HERMES_BUNDLE_SRC}"/config/*.template "${SS_DIR}/templates/" 2>/dev/null || true
+  ok "Config templates installed to ${SS_DIR}/templates"
+else
+  warn "Hermes bundle not found at ${HERMES_BUNDLE_SRC} — skipping"
 fi
 
 # Python venv for hermes-bridge
@@ -447,7 +457,14 @@ ok "Config written to ${SS_DIR}/agent.env"
 
 # Systemd services — quoted heredoc so systemd resolves ${SERVERSTICK_PORT} from EnvironmentFile
 
-# hermes-bridge service
+# The preflight `systemctl mask` creates a symlink to /dev/null for these services.
+# If we don't delete the symlink first, writing to the path is a no-op (the kernel
+# writes to /dev/null and the file stays 0 bytes). Remove any such symlink.
+rm -f /etc/systemd/system/serverstick-bridge.service
+rm -f /etc/systemd/system/serverstick-newt.service
+
+# Write hermes-bridge service.
+log "Writing systemd unit files..."
 cat > /etc/systemd/system/serverstick-bridge.service << 'EOF'
 [Unit]
 Description=ServerStick hermes-bridge
@@ -465,6 +482,9 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+if [[ ! -s /etc/systemd/system/serverstick-bridge.service ]]; then
+  error "Failed to write /etc/systemd/system/serverstick-bridge.service (disk full or permission denied?)"
+fi
 
 # Newt service
 cat > /etc/systemd/system/serverstick-newt.service << 'NEWTEOF'
@@ -485,10 +505,14 @@ NEWTEOF
 
 systemctl daemon-reload
 
+# The preflight `systemctl mask` creates a symlink to /dev/null, which prevents
+# enable from working. We need to unmask explicitly here.
+systemctl unmask serverstick-bridge 2>/dev/null || true
+systemctl unmask serverstick-newt 2>/dev/null || true
+
 # Only unmask and start when everything is confirmed working
 if [[ -x "${SS_OPT}/src/hermes-bridge/.venv/bin/uvicorn" ]] && \
    [[ -f "${SS_DIR}/agent.env" ]]; then
-  systemctl unmask serverstick-bridge
   systemctl enable serverstick-bridge
   systemctl restart serverstick-bridge
   sleep 2
