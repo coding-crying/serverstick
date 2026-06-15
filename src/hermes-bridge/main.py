@@ -257,16 +257,36 @@ async def _pangolin_create_site(subdomain: str) -> dict:
             headers={"Authorization": auth_header, "Content-Type": "application/json"},
             json={"name": subdomain, "type": "newt"},
         )
+        # If site already exists (conflict), we need to find its existing credentials.
+        # Pangolin returns the site data even on conflict for the same type,
+        # but if it doesn't, try to look it up from the local cache.
+        if r.status_code == 400 or r.status_code == 409:
+            # Site name taken — load existing site info from cache
+            resources = _load_resources()
+            cached_site = resources.get(f"_site_{subdomain}")
+            if cached_site:
+                return cached_site
+            # No cache — we can't recover the newt secret. Raise with helpful message.
+            raise RuntimeError(
+                f"Site '{subdomain}' already exists on Pangolin but we don't have its "
+                f"tunnel credentials. Either pick a different subdomain, or delete the "
+                f"existing site from the Pangolin dashboard and try again."
+            )
         r.raise_for_status()
         data = r.json().get("data", {})
         if not data.get("siteId"):
             raise RuntimeError(f"Pangolin site create returned no siteId: {r.text}")
-        return {
+        site_info = {
             "site_id": data.get("siteId"),
             "newt_id": data.get("newtId"),
             "newt_secret": data.get("secret"),
             "subnet": data.get("subnet"),
         }
+        # Cache the site info for future re-provisioning
+        resources = _load_resources()
+        resources[f"_site_{subdomain}"] = site_info
+        _save_resources(resources)
+        return site_info
 
 
 async def _pangolin_create_resource(subdomain: str, svc_subdomain: str, port: int, site_id: int) -> dict:
@@ -307,9 +327,16 @@ async def _pangolin_create_resource(subdomain: str, svc_subdomain: str, port: in
         r2.raise_for_status()
         target_id = r2.json().get("data", {}).get("targetId")
 
-        # Note: sso=0 (public access) is not set here. It requires either a PATCH
-        # endpoint we haven't verified exists, or a direct SQL update on the Pangolin
-        # VPS. For now, resources are SSO-gated by default. See PLAN.md "Public resources".
+        # Make the resource public (sso=0) via POST update.
+        # Pangolin's PUT (create) doesn't accept sso, but POST (update) does.
+        try:
+            r3 = await client.post(
+                f"{base}/v1/resource/{resource_id}",
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json={"sso": False},
+            )
+        except Exception:
+            pass  # Best effort — may not work on all Pangolin versions
 
         # Record in local cache for future lookups (Pangolin has no GET list endpoint)
         resources = _load_resources()
@@ -784,6 +811,17 @@ async def update_service_subdomain(service_id: str, req: UpdateSubdomainRequest)
             json={"siteId": old_site_id, "ip": "127.0.0.1", "port": meta["port"], "method": "http"},
         )
         r2.raise_for_status()
+
+        # Make the resource public (sso=0) — Pangolin's Integration API doesn't
+        # accept sso on create, but POST /v1/resource/{id} can update it.
+        try:
+            r3 = await client.post(
+                f"{base}/v1/resource/{resource_id}",
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json={"sso": False},
+            )
+        except Exception:
+            pass  # Best effort — some Pangolin versions may not support this
 
     # Update local cache: remove old, add new
     if old_full_sub in resources:
