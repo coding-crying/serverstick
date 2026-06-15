@@ -981,40 +981,94 @@ async def ws_chat(websocket: WebSocket):
 # ─── Status ─────────────────────────────────────────────────────────────────
 @app.get("/api/status")
 async def status():
-    """Overall system health."""
-    # Check NemoClaw
-    nemoclaw = "down"
+    """Overall system health: bridge, AI agent, tunnel, services, cert."""
+    # Check NemoClaw (the AI brain)
+    nemoclaw = {"status": "down", "endpoint": NEMOCLAW_API}
     try:
         async with httpx.AsyncClient(timeout=2) as client:
             r = await client.get(f"{NEMOCLAW_API}/health")
             if r.status_code == 200:
-                nemoclaw = "ok"
+                nemoclaw = {"status": "ok", "endpoint": NEMOCLAW_API}
     except Exception:
         pass
 
-    # Check Newt
-    newt = "down"
-    rc, out, err = _run(["systemctl", "is-active", "serverstick-newt"], timeout=3)
+    # Check Newt (the tunnel)
+    newt: dict = {"status": "down"}
+    rc, out, _ = _run(["systemctl", "is-active", "serverstick-newt"], timeout=3)
     if rc == 0 and "active" in out:
-        newt = "ok"
+        newt = {"status": "ok", "pid": _get_newt_pid()}
+    elif (BRIDGE_DIR / "newt.json").exists() or Path("/etc/newt/newt.json").exists():
+        newt["config_exists"] = True
 
     # Device name
     device_name = ""
     if (BRIDGE_DIR / "device_name").exists():
         device_name = (BRIDGE_DIR / "device_name").read_text().strip()
 
-    # Service count
+    # Service list
     svc_resp = await list_services()
-    running = sum(1 for s in svc_resp["services"] if s["status"] == "running")
+    services = svc_resp["services"]
+    running = sum(1 for s in services if s["status"] == "running")
+    stopped = [s["id"] for s in services if s["status"] == "stopped"]
+    errored = [s["id"] for s in services if s["status"] == "error"]
+
+    # Verify Pangolin reachability (public-side check)
+    pangolin_reachable = False
+    if device_name:
+        try:
+            async with httpx.AsyncClient(timeout=5, follow_redirects=True) as client:
+                r = await client.get(f"https://{device_name}.serverstick.com", follow_redirects=False)
+                # We don't care about the response body, just that it resolves + has a cert
+                pangolin_reachable = True
+                cert = r.headers.get("server", "?")
+        except httpx.ConnectError:
+            pangolin_reachable = False
+        except Exception:
+            pangolin_reachable = False
+
+    # Disk space
+    disk = psutil.disk_usage("/")
+    disk_warn = disk.percent > 90
 
     return {
         "bridge": "ok",
-        "nemoclaw": nemoclaw,
-        "newt": newt,
+        "version": "0.5.0",
         "device_name": device_name,
-        "services_running": running,
-        "services_total": len(svc_resp["services"]),
+        "ai_agent": nemoclaw,
+        "tunnel": newt,
+        "pangolin_reachable": pangolin_reachable,
+        "services": {
+            "running": running,
+            "total": len(services),
+            "stopped": stopped,
+            "errored": errored,
+            "list": [{"id": s["id"], "name": s["name"], "status": s["status"], "url": s["url"]} for s in services],
+        },
+        "disk": {
+            "used_gb": round(disk.used / 1e9, 1),
+            "total_gb": round(disk.total / 1e9, 1),
+            "percent": disk.percent,
+            "warn": disk_warn,
+        },
+        "uptime_secs": int(time.time() - psutil.boot_time()),
     }
+
+
+def _get_newt_pid() -> Optional[int]:
+    """Get newt process PID if running."""
+    try:
+        rc, out, _ = _run(["pgrep", "-f", "newt"], timeout=2)
+        if rc == 0 and out.strip():
+            return int(out.strip().split()[0])
+    except Exception:
+        pass
+    return None
+
+
+@app.get("/api/health")
+async def health():
+    """Minimal liveness probe — just confirms the bridge is up."""
+    return {"status": "ok"}
 
 
 # ─── Static file serving (Svelte build) ─────────────────────────────────────

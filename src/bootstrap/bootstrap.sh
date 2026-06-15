@@ -102,11 +102,31 @@ else
   error "Cannot detect OS"
 fi
 
+# Idempotency: if already installed, show status and offer to update
+if [[ -f "${SS_OPT}/src/hermes-bridge/main.py" ]] && [[ -x "${SS_OPT}/src/hermes-bridge/.venv/bin/uvicorn" ]]; then
+  ok "ServerStick is already installed at ${SS_OPT}"
+  if [[ -f "${SS_DIR}/device_name" ]]; then
+    log "Device: $(cat "${SS_DIR}/device_name")"
+  fi
+  log "Bridge port: ${AGENT_PORT}"
+  log "Re-running will update code and restart services (idempotent)."
+  echo ""
+fi
+
 # Kill any stale service from a previous run BEFORE any step runs.
 # If a prior install left a broken service file, systemd has been
 # crash-looping it since boot. Stop + mask immediately.
 systemctl stop serverstick-bridge 2>/dev/null || true
 systemctl mask serverstick-bridge 2>/dev/null || true
+
+# Verify required tools as we go
+require() {
+  local tool="$1"
+  local hint="${2:-}"
+  if ! command -v "$tool" &>/dev/null; then
+    error "Required tool '$tool' not found after install. ${hint}"
+  fi
+}
 
 # ─── Step 1: System dependencies ─────────────────────────────────────
 step "Step 1/7: System dependencies"
@@ -131,6 +151,9 @@ case "${OS_ID}" in
   arch|manjaro|endeavouros) install_deps_arch ;;
   *) warn "Unsupported OS: ${OS_ID}. Trying debian method..."; install_deps_debian ;;
 esac
+require curl
+require git
+require python3
 ok "System packages installed (curl, git, python3, binutils, zstd)"
 
 # ─── Step 2: Docker ──────────────────────────────────────────────────
@@ -143,7 +166,13 @@ else
   curl -fsSL https://get.docker.com | sh >/dev/null 2>&1
   systemctl enable docker
   systemctl start docker
-  ok "Docker installed"
+fi
+require docker "Check https://docs.docker.com/engine/install/"
+ok "Docker $(docker --version) installed"
+
+# Verify docker actually works
+if ! docker info &>/dev/null; then
+  error "Docker daemon not responding. Check: systemctl status docker"
 fi
 
 # Add current user to docker group if not root
@@ -181,9 +210,11 @@ else
   if command -v node &>/dev/null; then
     ok "Node.js $(node -v) installed"
   else
-    warn "Node.js install may have failed — NemoClaw and Svelte build need it"
+    error "Node.js install failed — NemoClaw and Svelte build need it. Install manually: https://nodejs.org/"
   fi
 fi
+require node
+require npm
 
 # ─── Step 4: NemoClaw install (Hermes onboard deferred to Svelte GUI) ─
 step "Step 4/7: NemoClaw (Hermes agent)"
@@ -253,17 +284,11 @@ if ! command -v newt &>/dev/null; then
   log "Installing Newt..."
   # Official Pangolin installer
   curl -fsSL "https://static.pangolin.net/get-newt.sh" | bash 2>/dev/null || {
-    warn "Newt install failed — tunnel will be configured during onboarding"
+    error "Newt install failed. Check network. Tunnel will be configured during onboarding."
   }
-  # Verify it landed
-  if command -v newt &>/dev/null; then
-    ok "Newt installed"
-  else
-    warn "Newt binary not found after install"
-  fi
-else
-  ok "Newt already installed"
 fi
+require newt "Newt binary required for Pangolin tunnel"
+ok "Newt installed"
 
 # ─── Step 6: ServerStick hermes-bridge (FastAPI + Svelte) ───────────
 step "Step 6/7: hermes-bridge (FastAPI + Svelte)"
@@ -322,17 +347,19 @@ fi
 cd "${SS_OPT}/src/hermes-bridge"
 if [[ ! -d .venv ]]; then
   log "Creating Python venv..."
-  python3 -m venv .venv
+  if ! python3 -m venv .venv; then
+    error "Failed to create Python venv. Check python3-venv is installed."
+  fi
 fi
 log "Installing Python deps..."
-.venv/bin/pip install -q fastapi "uvicorn[standard]" httpx pydantic psutil websockets 2>&1 || {
+if ! .venv/bin/pip install -q fastapi "uvicorn[standard]" httpx pydantic psutil websockets 2>&1; then
   error "pip install failed — check python3 and network"
-}
-# Verify uvicorn exists
+fi
+# Verify uvicorn exists AND is executable
 if [[ ! -x .venv/bin/uvicorn ]]; then
   error "uvicorn not found in venv — pip install may have failed"
 fi
-ok "Python deps installed"
+ok "Python deps installed (FastAPI, uvicorn, httpx, pydantic, psutil, websockets)"
 
 # Svelte dashboard build
 if [[ -d dashboard ]]; then
@@ -471,6 +498,57 @@ if [[ "${BRIDGE_UP}" -ne 1 ]]; then
   warn "Last 20 lines of journal:"
   journalctl -u serverstick-bridge -n 20 --no-pager 2>&1 | sed 's/^/    /' || true
   warn "Try: systemctl status serverstick-bridge"
+  warn "Try: journalctl -u serverstick-bridge -f"
+fi
+
+# Final validation: check that all critical services are present
+echo ""
+log "Final validation:"
+ERRORS=0
+
+# Check hermes-bridge
+if systemctl is-active --quiet serverstick-bridge; then
+  ok "  hermes-bridge: running on :${AGENT_PORT}"
+else
+  warn "  hermes-bridge: NOT running"
+  ((ERRORS++))
+fi
+
+# Check NemoClaw
+if command -v nemohermes &>/dev/null || command -v nemoclaw &>/dev/null; then
+  ok "  nemohermes: installed"
+else
+  warn "  nemohermes: NOT installed (Hermes AI agent won't work)"
+  ((ERRORS++))
+fi
+
+# Check Newt
+if command -v newt &>/dev/null; then
+  ok "  newt: installed"
+else
+  warn "  newt: NOT installed (tunnel won't work)"
+  ((ERRORS++))
+fi
+
+# Check config files
+if [[ -f "${SS_DIR}/agent.env" ]]; then
+  ok "  config: ${SS_DIR}/agent.env"
+else
+  warn "  config: missing ${SS_DIR}/agent.env"
+  ((ERRORS++))
+fi
+
+if [[ -f "${SS_DIR}/pangolin-api-key" ]]; then
+  ok "  pangolin-key: ${SS_DIR}/pangolin-api-key"
+else
+  warn "  pangolin-key: missing (Pangolin routing won't work — paste it manually)"
+  ((ERRORS++))
+fi
+
+if [[ ${ERRORS} -gt 0 ]]; then
+  warn "${ERRORS} warning(s) above. ServerStick may not work fully."
+else
+  ok "All components verified."
 fi
 
 echo ""
