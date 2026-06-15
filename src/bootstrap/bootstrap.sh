@@ -264,13 +264,16 @@ fi
 # ─── Step 6: ServerStick hermes-bridge (FastAPI + Svelte) ───────────
 step "Step 6/7: hermes-bridge (FastAPI + Svelte)"
 
+# Kill any stale service from a previous run before touching anything
+systemctl stop serverstick-bridge 2>/dev/null || true
+systemctl mask serverstick-bridge 2>/dev/null || true
+
 if [[ -f "${SS_OPT}/src/hermes-bridge/main.py" ]]; then
   ok "hermes-bridge code already present"
 else
   log "Downloading ServerStick code..."
   mkdir -p "${SS_OPT}"
-  TARBALL="/tmp/serverstick-code.tar.gz"
-  rm -f "${TARBALL}"
+  TARBALL="$(mktemp /tmp/serverstick-code.XXXXXX.tar.gz)"
 
   # Try tarball download (with retries), fall back to git clone
   DL_OK=0
@@ -419,15 +422,21 @@ NEWTEOF
 
 systemctl daemon-reload
 
-# Start hermes-bridge
-systemctl enable serverstick-bridge
-systemctl restart serverstick-bridge
-sleep 2
+# Only unmask and start when everything is confirmed working
+if [[ -x "${SS_OPT}/src/hermes-bridge/.venv/bin/uvicorn" ]] && \
+   [[ -f "${SS_DIR}/agent.env" ]]; then
+  systemctl unmask serverstick-bridge
+  systemctl enable serverstick-bridge
+  systemctl restart serverstick-bridge
+  sleep 2
 
-if systemctl is-active --quiet serverstick-bridge; then
-  ok "hermes-bridge running on port ${AGENT_PORT}"
+  if systemctl is-active --quiet serverstick-bridge; then
+    ok "hermes-bridge running on port ${AGENT_PORT}"
+  else
+    warn "hermes-bridge may need manual start: systemctl start serverstick-bridge"
+  fi
 else
-  warn "hermes-bridge may need manual start: systemctl start serverstick-bridge"
+  error "hermes-bridge install incomplete — check above errors"
 fi
 
 # ─── Step 7: Done ───────────────────────────────────────────────────
