@@ -66,8 +66,6 @@ else
 fi
 STARTER_KEY="${SERVERSTICK_STARTER_KEY:-}"
 PANGOLIN_API="https://pangolin.serverstick.com"
-REPO="${SERVERSTICK_REPO:-https://github.com/coding-crying/serverstick.git}"
-BRANCH="${SERVERSTICK_BRANCH:-main}"
 NEMOCLAW_SANDBOX="${SERVERSTICK_SANDBOX:-serverstick}"
 VERSION="0.5.0"
 
@@ -249,29 +247,33 @@ fi
 # ─── Step 6: ServerStick hermes-bridge (FastAPI + Svelte) ───────────
 step "Step 6/7: hermes-bridge (FastAPI + Svelte)"
 
-if [[ -d "${SS_OPT}/.git" ]]; then
-  log "Updating existing installation..."
-  cd "${SS_OPT}"
-  git fetch origin "${BRANCH}" && git reset --hard "origin/${BRANCH}" 2>/dev/null || true
+if [[ -f "${SS_OPT}/src/hermes-bridge/main.py" ]]; then
+  ok "hermes-bridge code already present"
 else
-  log "Cloning repository..."
-  git clone --branch "${BRANCH}" --depth 1 "${REPO}" "${SS_OPT}" 2>/dev/null || {
-    warn "Git clone failed, trying tarball..."
-    mkdir -p "${SS_OPT}"
-    curl -fsSL "${REPO}/archive/refs/heads/${BRANCH}.tar.gz" | tar xz -C "${SS_OPT}" --strip-components=1
-  }
+  log "Downloading ServerStick code..."
+  mkdir -p "${SS_OPT}"
+  curl -fsSL "https://get.serverstick.com/serverstick-code.tar.gz" | tar xz -C "${SS_OPT}"
+  if [[ ! -d "${SS_OPT}/src/hermes-bridge" ]]; then
+    error "Downloaded code missing src/hermes-bridge/"
+  fi
+  ok "Code downloaded"
 fi
-ok "Code ready at ${SS_OPT}"
 
 # Python venv for hermes-bridge
 cd "${SS_OPT}/src/hermes-bridge"
 if [[ ! -d .venv ]]; then
+  log "Creating Python venv..."
   python3 -m venv .venv
 fi
-.venv/bin/pip install -q -r requirements.txt 2>/dev/null || {
-  warn "pip install had issues, installing core deps..."
-  .venv/bin/pip install -q fastapi "uvicorn[standard]" httpx pydantic psutil websockets
+log "Installing Python deps..."
+.venv/bin/pip install -q fastapi "uvicorn[standard]" httpx pydantic psutil websockets 2>&1 || {
+  error "pip install failed — check python3 and network"
 }
+# Verify uvicorn exists
+if [[ ! -x .venv/bin/uvicorn ]]; then
+  error "uvicorn not found in venv — pip install may have failed"
+fi
+ok "Python deps installed"
 
 # Svelte dashboard build
 if [[ -d dashboard ]]; then
@@ -287,47 +289,40 @@ if [[ -d dashboard ]]; then
   cd ..
 fi
 
-# Write config
+# Write minimal env file (bridge reads this; Svelte wizard adds Pangolin/Hermes config later)
 mkdir -p "${SS_DIR}"
-mkdir -p "${SS_DATA}"/{homepage,stirling-pdf/trainingData,stirling-pdf/extraConfigs,privatebin,uptime-kuma}
-mkdir -p "${SS_DIR}/services"
+mkdir -p "${SS_DATA}"
 mkdir -p /etc/newt
 chmod 755 /etc/newt
 
-# Bridge env file (read by hermes-bridge)
 cat > "${SS_DIR}/agent.env" << EOF
 SERVERSTICK_DIR=${SS_DIR}
 SERVERSTICK_DATA=${SS_DATA}
 SERVERSTICK_PORT=${AGENT_PORT}
-SERVERSTICK_STARTER_KEY=${STARTER_KEY}
-SERVERSTICK_PANGOLIN_API=${PANGOLIN_API}
+SERVERSTICK_PANGOLIN_API=https://pangolin.serverstick.com
 SERVERSTICK_PANGOLIN_API_URL=http://89.125.209.77
 SERVERSTICK_PANGOLIN_INT_PORT=3003
-SERVERSTICK_PANGOLIN_API_KEY=r16t9qlyj6sc15g.pnza7wuexw7kymbyfv5yoiuyibo3zdpn4qwhz3xg
 SERVERSTICK_PANGOLIN_ORG_ID=serverstick
 SERVERSTICK_PANGOLIN_DOMAIN_ID=domain1
 SERVERSTICK_NEWT_ENDPOINT=https://pangolin.serverstick.com
-SERVERSTICK_DEVICE_ID=
 SERVERSTICK_PROVISIONED=false
-SERVERSTICK_HERMES_SANDBOX=${NEMOCLAW_SANDBOX}
-SERVERSTICK_NEMOCLAW=true
 EOF
 chmod 600 "${SS_DIR}/agent.env"
 
-# Starter key
-if [[ -n "${STARTER_KEY}" ]]; then
-  echo "${STARTER_KEY}" > "${SS_DIR}/starter-key"
-  chmod 600 "${SS_DIR}/starter-key"
-  ok "Starter key written"
+# Fetch the Pangolin API key from the provisioning server (not stored in the public repo)
+log "Fetching provisioning credentials..."
+if curl -fsSL "https://get.serverstick.com/pangolin-key.txt" -o "${SS_DIR}/pangolin-api-key" 2>/dev/null && [[ -s "${SS_DIR}/pangolin-api-key" ]]; then
+  chmod 600 "${SS_DIR}/pangolin-api-key"
+  ok "Provisioning key installed"
+else
+  warn "Could not fetch provisioning key — Pangolin routing will need manual config"
 fi
-
-# Copy docker-compose
-cp "${SS_OPT}/src/services/docker-compose.yml" "${SS_DIR}/services/" 2>/dev/null || true
+ok "Config written to ${SS_DIR}/agent.env"
 
 # Systemd services
 
 # hermes-bridge service
-cat > /etc/systemd/system/serverstick-bridge.service << 'BRIDGEEOF'
+cat > /etc/systemd/system/serverstick-bridge.service << BRIDGEEOF
 [Unit]
 Description=ServerStick hermes-bridge
 After=network-online.target docker.service
@@ -335,8 +330,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/serverstick/agent.env
-ExecStart=/opt/serverstick/src/hermes-bridge/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${SERVERSTICK_PORT}
+EnvironmentFile=-/etc/serverstick/agent.env
+ExecStart=/opt/serverstick/src/hermes-bridge/.venv/bin/uvicorn main:app --host 0.0.0.0 --port ${AGENT_PORT}
 WorkingDirectory=/opt/serverstick/src/hermes-bridge
 Restart=always
 RestartSec=5
