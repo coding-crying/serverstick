@@ -348,8 +348,12 @@ fi
 # Write env file FIRST so systemd EnvironmentFile always finds it
 mkdir -p "${SS_DIR}"
 mkdir -p "${SS_DATA}"
+mkdir -p "${SS_DIR}/services"
 mkdir -p /etc/newt
 chmod 755 /etc/newt
+
+# Copy docker-compose for the 8 services
+cp "${SS_OPT}/src/services/docker-compose.yml" "${SS_DIR}/services/" 2>/dev/null || true
 
 cat > "${SS_DIR}/agent.env" << EOF
 SERVERSTICK_DIR=${SS_DIR}

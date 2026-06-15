@@ -337,6 +337,28 @@ async def onboard_subdomain(req: SubdomainRequest):
             # Don't fail whole onboarding for one service
             subdomains.append(f"{meta['subdomain']}.{sub} (error: {e})")
 
+    # 5. Start Newt tunnel
+    newt_started = False
+    try:
+        rc, out, err = _run(["systemctl", "enable", "serverstick-newt"], timeout=10)
+        rc, out, err = _run(["systemctl", "restart", "serverstick-newt"], timeout=15)
+        newt_started = rc == 0
+    except Exception:
+        pass
+
+    # 6. Start Docker services
+    docker_started = False
+    compose_file = DOCKER_COMPOSE
+    if compose_file.exists():
+        try:
+            rc, out, err = _run(
+                ["docker", "compose", "-f", str(compose_file), "up", "-d"],
+                timeout=120,
+            )
+            docker_started = rc == 0
+        except Exception:
+            pass
+
     return {
         "status": "ok",
         "subdomain": sub,
@@ -344,6 +366,8 @@ async def onboard_subdomain(req: SubdomainRequest):
         "newt_id": site["newt_id"],
         "subdomains": subdomains,
         "newt_config_written": True,
+        "newt_started": newt_started,
+        "docker_started": docker_started,
     }
 
 
@@ -579,6 +603,64 @@ async def install_service(req: InstallRequest):
 
     asyncio.get_event_loop().run_in_executor(None, _run_install)
     return {"status": "started", "job_id": job_id, "recipe": req.recipe}
+
+
+class ProvisionResourceRequest(BaseModel):
+    service_id: str  # key from SERVICES_CATALOG
+    subdomain_override: Optional[str] = None  # custom sub-subdomain
+
+
+@app.post("/api/services/provision")
+async def provision_resource(req: ProvisionResourceRequest):
+    """Create a Pangolin resource (sub-subdomain) for an existing service.
+    Call this after onboarding to add new services or re-provision failed ones."""
+    device = (BRIDGE_DIR / "device_name").read_text().strip() if (BRIDGE_DIR / "device_name").exists() else ""
+    if not device:
+        raise HTTPException(400, "No device name set — run subdomain onboarding first")
+
+    # Look up service in catalog
+    meta = SERVICES_CATALOG.get(req.service_id)
+    if not meta:
+        raise HTTPException(400, f"Unknown service: {req.service_id}. Available: {list(SERVICES_CATALOG.keys())}")
+
+    # Get site info — we need the siteId from Pangolin
+    # Find the site for this device by listing sites
+    api_key = os.getenv("SERVERSTICK_PANGOLIN_API_KEY", "")
+    if not api_key:
+        key_path = os.getenv("SERVERSTICK_PANGOLIN_API_KEY_FILE", "/etc/serverstick/pangolin-api-key")
+        try:
+            api_key = open(key_path).read().strip()
+        except FileNotFoundError:
+            pass
+    api_url = os.getenv("SERVERSTICK_PANGOLIN_API_URL", "").rstrip("/")
+    int_port = os.getenv("SERVERSTICK_PANGOLIN_INT_PORT", "")
+    org_id = os.getenv("SERVERSTICK_PANGOLIN_ORG_ID", "")
+    if not api_key or not api_url or not org_id:
+        raise HTTPException(500, "Pangolin API not configured")
+
+    auth_header = "Bearer " + api_key
+    base = f"{api_url}:{int_port}"
+
+    # Find siteId for this device name
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{base}/v1/org/{org_id}/site", headers={"Authorization": auth_header})
+        r.raise_for_status()
+        sites = r.json().get("data", [])
+        site_id = None
+        for s in sites:
+            if s.get("name") == device:
+                site_id = s.get("siteId")
+                break
+        if not site_id:
+            raise HTTPException(404, f"No Pangolin site found for device '{device}'")
+
+    svc_sub = req.subdomain_override or meta["subdomain"]
+    try:
+        result = await _pangolin_create_resource(device, svc_sub, meta["port"], site_id)
+    except Exception as e:
+        raise HTTPException(502, f"Failed to create resource: {e}")
+
+    return {"status": "ok", "subdomain": result["subdomain"], "resource_id": result["resource_id"]}
 
 
 # ─── Hermes Activity & Credit ───────────────────────────────────────────────
