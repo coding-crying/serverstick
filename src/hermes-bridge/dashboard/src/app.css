@@ -1,0 +1,92 @@
+:root {
+  --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, Consolas, monospace;
+
+  /* Blue-purple theme */
+  --bg: #0a0a10;
+  --bg-card: #111119;
+  --bg-card-hover: #181825;
+  --bg-input: #0d0d16;
+  --border: #1e1e2e;
+  --border-active: #6c5ce7;
+  --text: #a0a0b8;
+  --text-dim: #6b6b80;
+  --text-heading: #e8e8f0;
+  --accent: #7c6ff0;
+  --accent-glow: rgba(124, 111, 240, 0.3);
+  --accent-strong: #a78bfa;
+  --orange: #f97316;
+  --orange-glow: rgba(249, 115, 22, 0.25);
+  --green: #34d399;
+  --green-glow: rgba(52, 211, 153, 0.2);
+  --wireguard-blue: #60a5fa;
+
+  font: 16px/1.55 var(--sans);
+  color-scheme: dark;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+h1, h2, h3 {
+  font-family: var(--sans);
+  color: var(--text-heading);
+  margin: 0;
+}
+
+h1 {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+h2 {
+  font-size: 20px;
+  font-weight: 500;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+input {
+  font-family: inherit;
+  outline: none;
+}
+
+a {
+  color: var(--accent-strong);
+  text-decoration: none;
+  transition: color 0.2s;
+
+  &:hover {
+    color: var(--accent);
+  }
+}

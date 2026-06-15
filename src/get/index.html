@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ServerStick — One-command self-hosting</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 60px auto; padding: 0 20px; color: #1a1a1a; line-height: 1.6; }
+    h1 { font-size: 28px; }
+    code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-size: 14px; }
+    pre { background: #1a1a1a; color: #4ade80; padding: 16px; border-radius: 6px; overflow-x: auto; }
+    pre code { background: none; padding: 0; color: inherit; }
+    .note { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; border-radius: 4px; margin: 20px 0; }
+  </style>
+</head>
+<body>
+  <h1>🪄 ServerStick</h1>
+  <p>One-command self-hosting. Turn any Linux box into a server with a public HTTPS dashboard.</p>
+
+  <p>To install, run this in a terminal on the target machine:</p>
+  <pre><code>curl -fsSL https://get.serverstick.com/install.sh | sudo bash</code></pre>
+
+  <p>Then open <code>http://&lt;box-ip&gt;:18090</code> in your browser to complete the wizard.</p>
+
+  <div class="note">
+    <strong>What it does:</strong>
+    <ol>
+      <li>Installs Docker, Node 22, Newt (Pangolin tunnel client)</li>
+      <li>Deploys hermes-bridge (FastAPI + Svelte dashboard) on port 18090</li>
+      <li>Wizard picks your subdomain, AI tier, and connected services</li>
+    </ol>
+  </div>
+
+  <p>For the static install script: <a href="/install.sh">/install.sh</a></p>
+</body>
+</html>

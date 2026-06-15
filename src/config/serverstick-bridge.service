@@ -1,0 +1,16 @@
+[Unit]
+Description=ServerStick hermes-bridge (FastAPI + Svelte)
+After=network-online.target docker.service serverstick-newt.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/serverstick/src/hermes-bridge
+ExecStart=/opt/serverstick/src/hermes-bridge/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 18090
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=NEMOCLAW_API=http://localhost:8642
+
+[Install]
+WantedBy=multi-user.target
