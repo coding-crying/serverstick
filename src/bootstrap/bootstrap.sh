@@ -30,22 +30,35 @@ error() { echo -e "${RED}[serverstick]${NC} ✗ $*" >&2; exit 1; }
 ok()    { echo -e "${GREEN}[serverstick]${NC} ✓ $*"; }
 step()  { echo -e "\n${CYAN}━━━ $* ━━━${NC}\n"; }
 
-# find_free_port <port>... → echoes the first free one, or empty if all taken
-find_free_port() {
-  local p
-  for p in "$@"; do
-    # Check if something is listening on this port
-    if command -v ss &>/dev/null; then
-      ss -tlnH "sport = :$p" 2>/dev/null | grep -q ":$p" && continue
-    fi
-    # Also try /dev/tcp — if we can connect, port is taken
-    (echo > /dev/tcp/127.0.0.1/$p) 2>/dev/null && continue
-    # Neither check found a listener — port is free
-    echo "$p"
+# port_in_use <port> → returns 0 (true) if something is listening, 1 (false) if free
+port_in_use() {
+  local p="$1"
+  # Prefer ss
+  if command -v ss &>/dev/null; then
+    ss -tlnH 2>/dev/null | grep -qE "[:.]${p}\b" && return 0
+    return 1
+  fi
+  # Fallback: /dev/tcp connect test
+  if (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then
+    exec 3>&- 2>/dev/null || true
     return 0
-  done
-  echo ""
+  fi
   return 1
+}
+
+# find_free_port <port>... → echoes the first free one; if all appear taken, echoes the LAST candidate
+find_free_port() {
+  local p last=""
+  for p in "$@"; do
+    last="$p"
+    if ! port_in_use "$p"; then
+      echo "$p"
+      return 0
+    fi
+  done
+  # All candidates appear taken — return the last one anyway (better than empty)
+  echo "$last"
+  return 0
 }
 
 set -euo pipefail
@@ -55,14 +68,18 @@ SS_DIR="/etc/serverstick"
 SS_DATA="/var/lib/serverstick/data"
 SS_OPT="/opt/serverstick"
 AGENT_PORT="${SERVERSTICK_PORT:-18090}"
-# If the default port is taken, try alternatives
-if command -v ss &>/dev/null && ss -tlnH "sport = :${AGENT_PORT}" 2>/dev/null | grep -q ":${AGENT_PORT}"; then
+# If the default port is taken, pick an alternative (18090 is in the candidate list as primary)
+if port_in_use "${AGENT_PORT}"; then
   warn "Port ${AGENT_PORT} is in use, trying alternatives..."
-  AGENT_PORT=$(find_free_port 19090 28090 38090 48090) || true
-  [[ -z "${AGENT_PORT}" ]] && error "could not find a free port"
+  AGENT_PORT=$(find_free_port 19090 28090 38090 48090)
   log "Using alternative port ${AGENT_PORT}"
 else
   log "Using bridge port ${AGENT_PORT}"
+fi
+# Safety net: never allow an empty port
+if [[ -z "${AGENT_PORT}" ]]; then
+  AGENT_PORT=18090
+  warn "Port detection returned empty; defaulting to ${AGENT_PORT}"
 fi
 STARTER_KEY="${SERVERSTICK_STARTER_KEY:-}"
 PANGOLIN_API="https://pangolin.serverstick.com"
@@ -252,9 +269,48 @@ if [[ -f "${SS_OPT}/src/hermes-bridge/main.py" ]]; then
 else
   log "Downloading ServerStick code..."
   mkdir -p "${SS_OPT}"
-  curl -fsSL "https://get.serverstick.com/serverstick-code.tar.gz" | tar xz -C "${SS_OPT}"
+  TARBALL="/tmp/serverstick-code.tar.gz"
+  rm -f "${TARBALL}"
+
+  # Try tarball download (with retries), fall back to git clone
+  DL_OK=0
+  for attempt in 1 2 3; do
+    if curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 \
+         "https://get.serverstick.com/serverstick-code.tar.gz" -o "${TARBALL}" 2>/dev/null; then
+      # Verify it's a valid gzip before extracting
+      if gzip -t "${TARBALL}" 2>/dev/null; then
+        if tar xzf "${TARBALL}" -C "${SS_OPT}" 2>/dev/null; then
+          DL_OK=1
+          break
+        else
+          warn "Extraction failed (attempt ${attempt})"
+        fi
+      else
+        warn "Downloaded file is not valid gzip (attempt ${attempt}) — got $(wc -c < "${TARBALL}" 2>/dev/null || echo 0) bytes"
+      fi
+    else
+      warn "Tarball download failed (attempt ${attempt})"
+    fi
+    sleep 2
+  done
+
+  # Fallback: clone the public GitHub repo
+  if [[ "${DL_OK}" -ne 1 ]]; then
+    warn "Tarball method failed — falling back to git clone from GitHub"
+    rm -rf "${SS_OPT}/src"
+    if git clone --depth 1 https://github.com/coding-crying/serverstick.git "${SS_OPT}/_repo" 2>/dev/null; then
+      # Move repo contents into place
+      cp -r "${SS_OPT}/_repo/." "${SS_OPT}/"
+      rm -rf "${SS_OPT}/_repo"
+      DL_OK=1
+      ok "Code cloned from GitHub"
+    else
+      error "Could not download code via tarball OR git clone. Check network/DNS for get.serverstick.com and github.com"
+    fi
+  fi
+
   if [[ ! -d "${SS_OPT}/src/hermes-bridge" ]]; then
-    error "Downloaded code missing src/hermes-bridge/"
+    error "Downloaded code missing src/hermes-bridge/ (got: $(ls "${SS_OPT}/src" 2>/dev/null | tr '\n' ' '))"
   fi
   ok "Code downloaded"
 fi
